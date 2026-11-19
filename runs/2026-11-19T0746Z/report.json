@@ -1,0 +1,101 @@
+{
+ "at": "2026-11-19T07:46:39.471Z",
+ "branches": {
+  "games-data": {
+   "same": 22,
+   "near": 7,
+   "diff": [
+    "blockx/W004.json (first difference at /targets/70)",
+    "blockx/X004-2.json (first difference at /targets/22/card)",
+    "blockx/X004-3.json (first difference at /targets/0)",
+    "bracket/W004.json (first difference at /days/0/23/re)",
+    "bracket/ruler/W004.json (first difference at /cards/0)",
+    "golf/W004.json (first difference at /holes/0/why)"
+   ],
+   "onlyLive": [
+    "bracket/ruler/W004-R0.json"
+   ],
+   "onlyShadow": []
+  },
+  "race-data": {
+   "same": 9,
+   "near": 1,
+   "diff": [
+    "R004.json (first difference at /races/11/card)",
+    "W004.json (first difference at /races/12/cards/1/at)",
+    "board.json (first difference at /today/rows/0)"
+   ],
+   "onlyLive": [],
+   "onlyShadow": []
+  },
+  "blocks-data": {
+   "same": 0,
+   "near": 0,
+   "diff": [
+    "recent-blocks.json (first difference at /made)"
+   ],
+   "onlyLive": [],
+   "onlyShadow": []
+  },
+  "vhp-data": {
+   "same": 88,
+   "near": 0,
+   "diff": [
+    "h/34327.json (first difference at /tail/sig/791)",
+    "h/34328.json (first difference at /prev)",
+    "h/34329.json (first difference at /prev)",
+    "h/34330.json (first difference at /prev)",
+    "h/34331.json (first difference at /prev)",
+    "h/34332.json (first difference at /prev)"
+   ],
+   "onlyLive": [
+    "h/34333.json",
+    "h/34334.json"
+   ],
+   "onlyShadow": []
+  },
+  "names-data": {
+   "same": 1,
+   "near": 0,
+   "diff": [],
+   "onlyLive": [],
+   "onlyShadow": []
+  },
+  "stats-data": {
+   "same": 0,
+   "near": 0,
+   "diff": [
+    "stats.json (first difference at /players/week)"
+   ],
+   "onlyLive": [],
+   "onlyShadow": []
+  },
+  "prize-settings": {
+   "same": 1,
+   "near": 0,
+   "diff": [],
+   "onlyLive": [],
+   "onlyShadow": []
+  },
+  "race-samples": {
+   "same": 0,
+   "near": 0,
+   "diff": [
+    "vhp-samples.json (first difference at /samples/0/at)"
+   ],
+   "onlyLive": [],
+   "onlyShadow": []
+  },
+  "game-data": {
+   "same": 34,
+   "near": 1,
+   "diff": [
+    "game-data/bot-state.json (first difference at /lastProduced)",
+    "game-data/questions/W004-D2.json (first difference at /questions/2/vhpReadings/13)",
+    "game-data/questions/W004-D3.json (first difference at /questions/0/vhpReadings)"
+   ],
+   "onlyLive": [],
+   "onlyShadow": []
+  }
+ }
+}
