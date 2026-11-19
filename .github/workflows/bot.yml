@@ -105,7 +105,9 @@ jobs:
         run: |
           set -euo pipefail
           d="$RUNNER_TEMP/data-in"; rm -rf "$d"; git init -q "$d"
-          if ! git -C "$d" fetch -q --depth 1 "https://github.com/${GITHUB_REPOSITORY}.git" "$DATA_REF"; then
+          # SHADOW REPO ONLY: read the LIVE question state (old repository main:game-data/) every hour, so this dry run
+          # checks what the bot would do now. Same files, same checks.
+          if ! git -C "$d" fetch -q --depth 1 "https://github.com/bawcejawn/KnodeGames.git" main; then
             echo "::error::Could not read the $DATA_REF branch. The bot does not run without its question files and state."; exit 1
           fi
           git -C "$d" checkout -q FETCH_HEAD
