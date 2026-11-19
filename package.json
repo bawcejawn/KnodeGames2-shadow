@@ -11,7 +11,7 @@
     "export-blocks": "tsx questions/export-blocks.ts",
     "bot": "tsx bot/bot.ts",
     "test:resolver": "node --max-old-space-size=4096 --import tsx --test questions/resolver.test.ts",
-    "test": "node --import tsx --test questions/resolver.test.ts tests/audit/site.early-view.test.mjs tests/audit/desk-treasury.test.ts tests/audit/site.ci-deps.test.mjs tests/audit/capacity-limits.test.mjs tests/audit/docs.vhp-void-disclosure.sab.test.ts tests/audit/site.font-inter.test.mjs tests/audit/site.static.test.mjs tests/audit/site.assembled-urls.test.mjs tests/audit/contracts.hashes-doc.test.mjs tests/audit/results-seal.test.mjs tests/audit/vault.verify-AB-058-forged-branch.test.mjs tests/audit/vault.verify-AB-060-lying-rpc.test.mjs tests/audit/vault.redteam-insider-silent-seal.test.mjs tests/audit/alert-summary.test.mjs tests/audit/repolens-g2.test.mjs",
+    "test": "node --import tsx --test questions/resolver.test.ts tests/audit/site.early-view.test.mjs tests/audit/desk-treasury.test.ts tests/audit/site.ci-deps.test.mjs tests/audit/capacity-limits.test.mjs tests/audit/docs.vhp-void-disclosure.sab.test.ts tests/audit/site.font-inter.test.mjs tests/audit/site.static.test.mjs tests/audit/bot.reads-game-data.test.mjs tests/audit/site.assembled-urls.test.mjs tests/audit/contracts.hashes-doc.test.mjs tests/audit/results-seal.test.mjs tests/audit/vault.verify-AB-058-forged-branch.test.mjs tests/audit/vault.verify-AB-060-lying-rpc.test.mjs tests/audit/vault.redteam-insider-silent-seal.test.mjs tests/audit/alert-summary.test.mjs tests/audit/repolens-g2.test.mjs",
     "lint": "node tools/ci/lint.mjs",
     "site": "node tools/ci/assemble-site.mjs",
     "test:vault": "node --import tsx --test bot/vault.test.ts bot/vault-fuzz.test.ts bot/free-prizes.test.ts",

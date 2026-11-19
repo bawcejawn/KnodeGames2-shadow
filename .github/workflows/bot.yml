@@ -95,8 +95,29 @@ jobs:
         with:
           ref: main
           persist-credentials: false
+      # The question files and the bot's state live on the game-data branch (docs/DATA.md), not on main. The bot must
+      # never run without them: with no question files it would void every live question as "unknown" and post the
+      # day's questions again (found by the KnodeGames2-shadow run, 18 Nov 2026). Read without a token (public), plain
+      # files only, and "start" is that branch's head, which the publish job compares against.
       - id: start
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        env:
+          DATA_REF: game-data
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/data-in"; rm -rf "$d"; git init -q "$d"
+          if ! git -C "$d" fetch -q --depth 1 "https://github.com/${GITHUB_REPOSITORY}.git" "$DATA_REF"; then
+            echo "::error::Could not read the $DATA_REF branch. The bot does not run without its question files and state."; exit 1
+          fi
+          git -C "$d" checkout -q FETCH_HEAD
+          for p in questions index.json state.json bot-state.json; do
+            [ -e "$d/game-data/$p" ] || { echo "::error::$DATA_REF has no game-data/$p. The bot does not run without it."; exit 1; }
+          done
+          if [ -n "$(find "$d/game-data" ! -type f ! -type d)" ]; then echo "::error::$DATA_REF holds something that is not a plain file."; exit 1; fi
+          mkdir -p game-data
+          rm -rf game-data/questions && cp -R "$d/game-data/questions" game-data/questions
+          cp "$d/game-data/index.json" "$d/game-data/state.json" "$d/game-data/bot-state.json" game-data/
+          echo "Question files and state from $DATA_REF at $(git -C "$d" rev-parse --short FETCH_HEAD): $(ls game-data/questions | wc -l) question files."
+          echo "sha=$(git -C "$d" rev-parse FETCH_HEAD)" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
