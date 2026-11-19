@@ -1,0 +1,457 @@
+/**
+ * REHEARSAL — runs the real contract code and the real bot through several whole weeks on a simulated chain,
+ * then checks every result independently. No network, no keys, no KOIN.
+ *
+ *   npm run bot -- rehearse [--weeks 3] [--verbose]
+ *
+ * How it is simulated:
+ *   - the chain's blocks are the REAL mainnet history in data/blocks-compact.csv.gz, replayed hour by hour, so the
+ *     generator makes and resolves real questions about real producers;
+ *   - the contract is the game's test build running in the Koinos mock VM (its token ledger lives inside it);
+ *   - block rewards are added to the contract every simulated hour, and production turns some VHP into KOIN;
+ *   - 10 simulated players with different habits deposit, answer, withdraw, claim — or vanish;
+ *   - trouble is injected on purpose: a crash right after posting, a stray question the bot knows nothing
+ *     about, and a long outage of the bot.
+ */
+import fs from "node:fs";
+import path from "node:path";
+import { Signer } from "koilib";
+import { SimChain, showKoin } from "./chain.ts";
+import { tick, paths, generatorRunner, allPlayers, roundsOfDay, DAY, DAY_MS, HOUR_MS, utc, type Ctx } from "./bot.ts";
+import { readCompact, writeCsv } from "../questions/common.ts";
+import { winnersOf, rewardOf, freePrizeOf, freeTop, FREE_PRIZE } from "./payout.ts";
+
+const SIM_WASM = "contracts/vault/build/sim/contract.wasm";
+const VHP = 100_000_000n;
+const HOUR = 1_200;
+/** Numbers from contract results: protobuf leaves out zero values, so a missing field means 0. */
+const N = (x: any) => Number(x ?? 0);
+
+let seed = 12345;
+const rnd = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+const pick = <T>(a: T[]) => a[Math.floor(rnd() * a.length)];
+
+type Habit = "diligent" | "casual" | "ghost" | "quitter" | "late" | "tiny" | "whale";
+type Player = { name: string; key: Signer; habit: Habit; stake: bigint; claimed: bigint };
+
+export async function rehearse(opts: { weeks: number; verbose: boolean }) {
+  if (!fs.existsSync(SIM_WASM)) throw new Error(`${SIM_WASM} not found — in the game folder run: npm run build:sim`);
+  const t0 = Date.now();
+  const checks: Array<{ ok: boolean; what: string }> = [];
+  const check = (ok: boolean, what: string) => { checks.push({ ok, what }); if (!ok || opts.verbose) console.log(`${ok ? "PASS" : "FAIL"}  ${what}`); };
+
+  // ── the simulated chain ──
+  console.log("Loading the real block history ...");
+  const history = readCompact();
+  const h0 = history[0].h;
+  // Weeks follow the real block timestamps: week 1 starts on the first Monday 00:00 UTC after 27 days of history
+  // (the generator's model needs ~25 days behind it), exactly like mainnet.
+  const tsOf = (h: number) => history[h - h0].ts;
+  const heightAt = (t: number) => { let lo = 0, hi = history.length - 1; while (lo < hi) { const m = (lo + hi) >> 1; if (history[m].ts < t) lo = m + 1; else hi = m; } return history[lo].h; };
+  let genesisTime = Math.ceil(tsOf(h0 + 27 * DAY) / DAY_MS) * DAY_MS;
+  while (new Date(genesisTime).getUTCDay() !== 1) genesisTime += DAY_MS;
+  const genesis = heightAt(genesisTime);
+  const endTime = genesisTime + opts.weeks * 7 * DAY_MS + 3 * DAY_MS; // past the last week's close (Mon 12:00) and settlement (Tue 12:00)
+  if (endTime > history[history.length - 1].ts) throw new Error(`Not enough history for ${opts.weeks} weeks.`);
+  const endHeight = heightAt(endTime);
+  const contract = Signer.fromSeed("rehearsal contract"), operator = Signer.fromSeed("rehearsal operator");
+  const owner = Signer.fromSeed("rehearsal owner"), seedOwner = Signer.fromSeed("rehearsal seed");
+  const sim = new SimChain(contract.getAddress(), SIM_WASM);
+  await sim.init();
+  const C = contract.getAddress();
+
+  const dir = "rehearsal-data";
+  fs.rmSync(dir, { recursive: true, force: true });
+  fs.mkdirSync(dir, { recursive: true });
+  const P = paths(dir);
+  const run = generatorRunner(dir, ["--offline"]);
+  let generatorRuns = 0;
+
+  // The pool's own block production is played by a real producer that was steady over the whole period;
+  // a 3-hour outage of "our node" is injected near the end to test the email alarm.
+  const lo = genesis - 2 * DAY - h0, hi = endHeight - h0;
+  const lastSeen = new Map<string, number>(), maxGap = new Map<string, number>(), count = new Map<string, number>();
+  for (let i = lo; i <= hi; i++) {
+    const b = history[i];
+    maxGap.set(b.signer, Math.max(maxGap.get(b.signer) ?? b.h - history[lo].h, b.h - (lastSeen.get(b.signer) ?? history[lo].h)));
+    lastSeen.set(b.signer, b.h);
+    count.set(b.signer, (count.get(b.signer) ?? 0) + 1);
+  }
+  const standIn = [...count.keys()].filter((a) => (maxGap.get(a) ?? 1e9) < 600 && endHeight - (lastSeen.get(a) ?? 0) < 600)
+    .sort((a, b) => count.get(b)! - count.get(a)!)[0];
+  if (!standIn) throw new Error("no steady producer in the history to stand in for the pool");
+  const outStart = heightAt(genesisTime + (opts.weeks * 7 - 5) * DAY_MS + 6 * HOUR_MS), outEnd = outStart + 3 * HOUR;
+  let returnedTo = 0;
+  const recentBlocks = async () => {
+    const lib = sim.height - 60;
+    const from = Math.max(h0, lib - 26 * DAY, returnedTo + 1);
+    returnedTo = lib;
+    return history.slice(from - h0, lib - h0 + 1).map((b) => ({
+      h: b.h, signer: b.signer === standIn ? (b.h >= outStart && b.h < outEnd ? "our node was down" : C) : b.signer,
+    }));
+  };
+
+  const ctx: Ctx = {
+    chain: sim, operator, P, dryRun: false, quiet: !opts.verbose, checkpoint: () => {}, problems: [], recentBlocks,
+    generator: (args) => {
+      // The generator reads blocks.csv: give it the last 26 days of irreversible history at the simulated height.
+      const lib = sim.height - 60;
+      const from = Math.max(h0, lib - 26 * DAY);
+      writeCsv(path.join(dir, "blocks.csv"), history.slice(from - h0, lib - h0 + 1));
+      generatorRuns++;
+      return run(args);
+    },
+  };
+
+  sim.setHeight(genesis - 2 * DAY, tsOf(genesis - 2 * DAY));
+  const init = { owner: owner.getAddress(), operator: operator.getAddress(), seed_owner: seedOwner.getAddress(), genesis_time: String(genesisTime),
+    week_length: String(7 * DAY_MS), close_delay: String(12 * HOUR_MS), settle_length: String(24 * HOUR_MS), timelock_length: String(48 * HOUR_MS),
+    min_stake: String(VHP), max_sponsor_rc: String(2n * VHP) };
+  check((await sim.sendAs([{ method: "init", args: init }], [C])).ok, `contract initialised with the mainnet settings (week 1 starts ${utc(genesisTime)}, a Monday)`);
+
+  // ── wallets ──
+  const habits: Habit[] = ["diligent", "diligent", "diligent", "casual", "casual", "ghost", "quitter", "late", "tiny", "whale"];
+  const players: Player[] = habits.map((habit, i) => ({ name: `P${i}-${habit}`, key: Signer.fromSeed(`rehearsal player ${i}`), habit, stake: 0n, claimed: 0n }));
+  for (const p of players) for (const tag of [1, 2, 3]) await sim.ledgerSet(tag, p.key.getAddress(), 100_000n * VHP);
+  for (const tag of [1, 2, 3]) await sim.ledgerSet(tag, seedOwner.getAddress(), 300_000n * VHP);
+  const act = async (who: Signer, method: string, args: any) => (await sim.sendAs([{ method, args }], [who.getAddress()], false)).ok;
+
+  // Seed: 170,000 VHP producing + 20,000 KOIN as the Mana reserve (the planned mainnet seed).
+  check(await act(seedOwner, "seed_deposit_vhp", { amount: String(170_000n * VHP) }), "seed: 170,000 VHP deposited");
+  check(await act(seedOwner, "seed_deposit_koin", { amount: String(20_000n * VHP) }), "seed: 20,000 KOIN deposited (kept as KOIN for Mana)");
+  const stakes: Record<Habit, bigint> = { diligent: 500n * VHP, casual: 200n * VHP, ghost: 300n * VHP, quitter: 400n * VHP, late: 250n * VHP, tiny: VHP / 2n, whale: 20_000n * VHP };
+  for (const p of players) {
+    if (p.habit === "late") continue; // deposits during week 0 → counts from week 1
+    const amt = stakes[p.habit];
+    if (await act(p.key, p.habit === "whale" ? "deposit_koin" : "deposit_vhp", { from: p.key.getAddress(), amount: String(amt) })) p.stake += amt;
+  }
+
+  // ── block production: every hour the pool's VHP makes blocks; ~12% a year, some VHP turns into KOIN ──
+  let minted = 0n;
+  const produce = async () => {
+    const vhp = await sim.ledgerGet(2, C);
+    const reward = (vhp * 12n) / (100n * 8760n);
+    const burned = vhp / 2000n;
+    await sim.ledgerSet(2, C, vhp - burned);
+    await sim.ledgerAdd(1, C, burned + reward);
+    await sim.ledgerSet(3, C, await sim.ledgerGet(1, C)); // the contract's Mana follows its KOIN (fully regenerated)
+    minted += reward;
+  };
+
+  // ── trouble to inject ──
+  let crashInjected = false, strayPosted = false, outageDone = false, strayAlerts = 0;
+  const strayHash = "0x" + "5a".repeat(32);
+  let alarmsDuringOutage = 0, falseAlarms = 0, lateAfterOutage = 0, firstRunAfterOutage = false;
+  const otherProblems: string[] = [];
+
+  const weekLog: string[] = [];
+  let lastClosed = 0;
+  const closeTimes: number[] = [];
+  let ticks = 0, outageSkips = 0, claimChecked = 0;
+  const answered = new Set<string>();
+
+  console.log(`Rehearsing ${opts.weeks} weeks on real blocks ${genesis}…${endHeight}, ${utc(genesisTime)} to ${utc(endTime)} (one bot run per ~hour) ...`);
+  for (let h = genesis - 2 * DAY + HOUR; h <= endHeight; h += HOUR) {
+    const now = tsOf(h);
+    sim.setHeight(h, now);
+    await produce();
+    const week = now < genesisTime ? -1 : Math.floor((now - genesisTime) / (7 * DAY_MS));
+    const dayIdx = now < genesisTime ? -1 : Math.floor((now - genesisTime) / DAY_MS);
+
+    // ── players ──
+    const st = await sim.read("get_state", {});
+    const next = N(st.totals.next_question_id ?? 0);
+    const open: any[] = [];
+    for (let id = Math.max(0, next - 8); id < next; id++) {
+      const q = (await sim.read("get_question", { id })).question;
+      if (q && now < N(q.lock_time) && N(q.outcome ?? 0) === 0) open.push({ id, k: N(q.k) });
+    }
+    const fin = N(st.totals.weeks_finalized ?? 0);
+    for (const p of players) {
+      const A = p.key.getAddress();
+      if (p.habit === "late" && p.stake === 0n && week === 0 && dayIdx === 2) {
+        if (await act(p.key, "deposit_vhp", { from: A, amount: String(stakes.late) })) p.stake += stakes.late;
+      }
+      if (p.habit === "ghost" && week >= 1) continue;                   // played week 0, then vanished forever
+      if (p.habit === "quitter" && week === 1 && dayIdx === 10 && p.stake > 0n) {
+        const amt = p.stake;                                               // withdraws everything mid-week: out of week 1
+        if (await act(p.key, "withdraw", { to: A, amount: String(amt) })) p.stake -= amt;
+      }
+      // answer open questions
+      for (const q of open) {
+        if (answered.has(`${A}:${q.id}`)) continue;
+        answered.add(`${A}:${q.id}`);                                    // one decision per question
+        if (p.habit === "casual" && rnd() < 0.4) continue;
+        await act(p.key, "answer", { player: A, question_id: q.id, option: Math.floor(rnd() * q.k) });
+      }
+      // claim finished weeks (everyone except the ghost, who never comes back)
+      if (p.habit !== "ghost" && fin > claimChecked) {
+        for (let w = Math.max(0, fin - 2); w < fin; w++) {
+          const r = await sim.read("get_player", { player: A, week: String(w) });
+          const fwk = r.entry?.settled && !r.entry.eligible && !r.entry.claimed ? (await sim.read("get_week", { week: String(w) })).week : null;
+          if (fwk && fwk.finalized && freePrizeOf(fwk, N(r.entry.points), r.entry) > 0n) {   // v5: a free player's prize
+            const before = await sim.ledgerGet(2, A);
+            if (await act(p.key, "claim", { player: A, week: String(w) })) p.claimed += (await sim.ledgerGet(2, A)) - before;
+            continue;
+          }
+          if (r.entry?.eligible && !r.entry.claimed) {
+            const wk = (await sim.read("get_week", { week: String(w) })).week;
+            if (wk.rolled_over || N(r.entry.points) < N(wk.cutoff)) continue;
+            const before = await sim.ledgerGet(2, A);
+            if (await act(p.key, "claim", { player: A, week: String(w) })) p.claimed += (await sim.ledgerGet(2, A)) - before;
+          }
+        }
+      }
+    }
+
+    claimChecked = fin;
+
+    // ── injected trouble ──
+    if (!strayPosted && week === 1 && dayIdx === 9) {
+      // A question the bot knows nothing about (as if posted by hand with the operator key). The bot must void it
+      // after its window, or week 1 could never close.
+      // (answers must stay open at least 1 hour, so it closes 2 hours later; its window starts after that)
+      strayPosted = await act(operator, "post_question", { k: 2, lock_time: String(now + 2 * HOUR_MS), window_start: String(h + 2700), window_end: String(h + 3800), params_hash: strayHash });
+      check(strayPosted, "injected: a stray question unknown to the bot was posted on-chain");
+    }
+    if (!outageDone && week === 1 && dayIdx === 11 && (now - genesisTime) % DAY_MS < 20 * HOUR_MS) { outageSkips++; continue; } // bot down ~20 h
+    if (!outageDone && week === 1 && dayIdx === 11) { outageDone = true; firstRunAfterOutage = true; check(outageSkips >= 19, `injected: the bot was down for ${outageSkips} hours`); }
+
+    // ── the bot ──
+    const bsFile = P.botState;
+    const bsBefore = fs.existsSync(bsFile) ? fs.readFileSync(bsFile, "utf8") : null;
+    const snap = new Map<string, string>();
+    if (!crashInjected && week === 1 && dayIdx === 8) for (const f of fs.existsSync(P.questions) ? fs.readdirSync(P.questions) : []) snap.set(f, fs.readFileSync(path.join(P.questions, f), "utf8"));
+    await tick(ctx);
+    ticks++;
+    for (const pr of ctx.problems) {
+      if (/produced no block/.test(pr)) { if (h > outStart && h <= outEnd + HOUR) alarmsDuringOutage++; else { falseAlarms++; console.log(`  unexpected alarm at ${h}: ${pr}`); } }
+      // The bot was down ~20 h, so its first run back finds results overdue: the late-result alert (audit H-2) must fire.
+      else if (firstRunAfterOutage && /still unresolved [\d.]+ h after its window ended/.test(pr)) lateAfterOutage++;
+      // The injected stray question used one of the week's 30 slots, so one real question can't be posted: expected.
+      else if (strayPosted && /was not posted: the week already has 30 questions on chain/.test(pr)) { /* expected */ }
+      else if (strayPosted && pr.includes("matches no question file") && pr.includes(`params_hash ${strayHash}`)) strayAlerts++; // the injected stray question: expected
+      else { otherProblems.push(`${h}: ${pr}`); }
+    }
+    ctx.problems = [];
+    firstRunAfterOutage = false;
+    if (!crashInjected && week === 1 && dayIdx === 8) {
+      // Crash simulation: the bot posted questions but "died" before saving their on-chain ids.
+      const posted = fs.readdirSync(P.questions).filter((f) => !snap.has(f) || snap.get(f) !== fs.readFileSync(path.join(P.questions, f), "utf8"));
+      for (const f of posted) {
+        // Only questions posted in THIS run lose their ids (ids at or above what the bot had already saved).
+        const saved = bsBefore ? JSON.parse(bsBefore).checkedUpTo : 0;
+        const d = JSON.parse(fs.readFileSync(path.join(P.questions, f), "utf8"));
+        if (!d.questions.some((q: any) => q.chainId !== undefined && q.chainId >= saved)) continue;
+        for (const q of d.questions) if (q.chainId !== undefined && q.chainId >= saved) delete q.chainId;
+        fs.writeFileSync(path.join(P.questions, f), JSON.stringify(d, null, 2));
+        if (bsBefore !== null) fs.writeFileSync(bsFile, bsBefore);
+        crashInjected = true;
+        check(true, `injected: crash after posting ${f} (its on-chain ids were never saved)`);
+      }
+    }
+
+    // ── per-week bookkeeping ──
+    const s2 = await sim.read("get_state", {});
+    const closed = N(s2.totals.weeks_closed);
+    while (lastClosed < closed) {
+      const wk = (await sim.read("get_week", { week: String(lastClosed) })).week;
+      closeTimes.push(N(wk.settle_start));
+      lastClosed++;
+    }
+  }
+
+  // ═══════════════════ independent checks ═══════════════════
+  const st = await sim.read("get_state", {});
+  const T = st.totals;
+  const W = opts.weeks;
+  console.log("");
+  check(N(T.weeks_closed) >= W, `all ${W} weeks closed automatically (closed: ${T.weeks_closed})`);
+  check(N(T.weeks_finalized) >= W, `all ${W} weeks finalized automatically (finalized: ${T.weeks_finalized})`);
+  for (let w = 0; w < W; w++) {
+    const due = genesisTime + (w + 1) * 7 * DAY_MS + 12 * HOUR_MS; // Monday 12:00 UTC
+    const late = closeTimes[w] - due;
+    check(closeTimes[w] !== undefined && late >= 0 && late <= 75 * 60_000, `week ${w + 1} closed on time: ${utc(closeTimes[w])}, ${Math.round(late / 60_000)} min after Monday 12:00 UTC`);
+  }
+
+  // Questions: every one resolved, on-chain outcomes equal the generator's results, all inside their week.
+  const files = fs.readdirSync(P.questions).sort().map((f) => JSON.parse(fs.readFileSync(path.join(P.questions, f), "utf8")));
+  const local = files.flatMap((d: any) => d.questions);
+  const posted = local.filter((q: any) => q.chainId !== undefined);
+  const nq = N(T.next_question_id);
+  check(posted.length + 1 === nq, `every on-chain question is accounted for: ${posted.length} from the generator + 1 stray = ${nq}`);
+  check(new Set(posted.map((q: any) => q.chainId)).size === posted.length, "no question was posted twice (the crash was recovered by matching hashes)");
+  let mismatch = 0, unresolved = 0, outOfWeek = 0, voids = 0, offSchedule = 0;
+  for (const q of posted) {
+    const oc = (await sim.read("get_question", { id: q.chainId })).question;
+    const w = N(oc.week);
+    if (N(oc.outcome) === 0) { if (w < W) { unresolved++; console.log(`  unresolved: ${q.id} (#${q.chainId})`); } continue; }
+    if (!q.result) { mismatch++; console.log(`  ${q.id} (#${q.chainId}) is resolved on-chain (${oc.outcome}) but has no local result`); continue; }
+    const mine = q.result.void ? 1000 : q.result.option + 1;
+    if (mine !== N(oc.outcome)) mismatch++;
+    if (q.result.void) voids++;
+    if (String(oc.params_hash).replace(/^0x/, "") !== q.paramsHash) mismatch++;
+    const wEnd = genesisTime + (w + 1) * 7 * DAY_MS;
+    if (N(oc.lock_time) > wEnd || tsOf(N(oc.window_end) + 60) > wEnd + 12 * HOUR_MS) outOfWeek++;
+    // the rhythm: answers close when a round of the schedule closes (bot.ts roundsOfDay), and the watched blocks only
+    // start afterwards
+    const lock = N(oc.lock_time), dl = Math.floor((lock - 1 - genesisTime) / DAY_MS);
+    const locks = [dl - 1, dl, dl + 1].flatMap((d) => roundsOfDay(genesisTime, d)).map((r) => r.lockTime);
+    if (!locks.includes(lock) || tsOf(N(oc.window_start)) < lock) offSchedule++;
+  }
+  check(unresolved === 0, `every question of a finished week was resolved (${posted.length} questions, ${voids} void)`);
+  check(mismatch === 0, "every on-chain outcome and params hash equals the generator's published result");
+  check(outOfWeek === 0, "every question closed for answers inside its week and finished in time for the week to close");
+  check(offSchedule === 0, "every question's answers closed at exactly 00:00 UTC (Mon–Sat questions) and its blocks were all produced after that");
+  const perWeek = new Map<number, number>();
+  for (const q of posted) perWeek.set(q.week, (perWeek.get(q.week) ?? 0) + 1);
+  check([...perWeek.entries()].filter(([w]) => w < W).every(([, n]) => n >= 28 && n <= 31), `about 30 questions each week (${[...perWeek.entries()].filter(([w]) => w < W).map(([w, n]) => `week ${w + 1}: ${n}`).join(", ")})`);
+  let strayVoid = false;
+  for (let id = 0; id < nq; id++) { const q = (await sim.read("get_question", { id })).question; if (String(q.params_hash) === strayHash) strayVoid = N(q.outcome) === 1000; }
+  check(strayVoid && strayAlerts === 1, `the stray question was emailed about once (${strayAlerts} time(s)) and resolved as VOID, so its week could close`);
+  const usesBy = new Map<string, number>();
+  for (const q of local) for (const a of new Set<string>([...(q.subjects ?? []), ...(q.group ?? [])])) usesBy.set(`${q.week}:${a}`, (usesBy.get(`${q.week}:${a}`) ?? 0) + 1);
+  const most = Math.max(0, ...usesBy.values()), cap = JSON.parse(fs.readFileSync(path.join("game-data", "game.json"), "utf8")).maxUsesPerWeek ?? 4;
+  check(most <= cap, `no producer was part of more than ${cap} questions in one week (most: ${most})`);
+  const lateSkips = local.filter((q: any) => q.postSkipped).length;
+  const dayFilesSkipped = files.filter((d: any) => d.skipped).length;
+  check(true, `bot outage handled: ${lateSkips} question(s) skipped as too late to answer, ${dayFilesSkipped} day(s) skipped`);
+
+  // Scoring: recompute every week's winners off-chain from the raw entries and compare with the contract.
+  for (let w = 0; w < W; w++) {
+    const wk = (await sim.read("get_week", { week: String(w) })).week;
+    const rows = await allPlayers(sim, w);
+    const entries = rows.filter((r) => r.entry);
+    const outcome = new Map<number, number>();
+    for (let id = 0; id < nq; id++) outcome.set(id, N((await sim.read("get_question", { id })).question.outcome));
+    const scored = entries.map((r) => {
+      const e = r.entry;
+      let pts = 0, counted = 0;
+      if (!e.voided) for (const a of e.answers ?? []) { const o = outcome.get(N(a.question_id))!; if (o === 1000) continue; counted++; if (o === N(a.option) + 1) pts++; }
+      return { addr: r.address, pts, eligible: !e.voided && counted > 1 && BigInt(e.stake) >= VHP, stake: BigInt(e.stake), e };
+    });
+    const staked = entries.filter((r) => BigInt(r.entry.stake ?? 0) >= VHP);
+    const allSettled = staked.every((r) => r.entry.settled);
+    const pointsMatch = scored.filter((s) => s.e.settled).every((s) => s.pts === N(s.e.points) && s.eligible === !!s.e.eligible);
+    // Free players are never eligible for the baskets. From v5 the 2 best free scores share the free prize: recount
+    // them independently (among settled free players) and check every free claim to the unit.
+    // A free player never held the minimum stake that week (audit L-4: peak_stake, not only the stake left).
+    const peakOf = (e: any) => { const a = BigInt(e.stake ?? 0), b = BigInt(e.peak_stake ?? 0); return a > b ? a : b; };
+    const freeRows = scored.filter((s) => peakOf(s.e) < VHP);
+    const settledFree = freeRows.filter((s) => s.e.settled && !s.e.voided && N(s.e.counted) > 1 && (!wk.reward_rule || s.e.free_player));
+    const ft = freeTop(settledFree.map((s) => s.pts));
+    const freeNeverPaid = freeRows.every((s) => !s.e.eligible) && freeRows.every((s) => !s.e.claimed || (wk.reward_rule && BigInt(s.e.reward) === freePrizeOf(wk, s.pts, s.e) && BigInt(s.e.reward) > 0n))
+      && (!wk.reward_rule || (N(wk.free_best) === ft.best && N(wk.free_best_n) === ft.bn && N(wk.free_second) === ft.second && N(wk.free_second_n) === ft.sn));
+    const elig = scored.filter((s) => s.eligible);
+    const W8 = winnersOf(elig.map((s) => ({ pts: s.pts, stake: s.stake })));
+    const winners = W8.cutoff >= 1 ? elig.filter((s) => s.pts >= W8.cutoff) : [];
+    const onBw = (BigInt(wk.bw_hi ?? 0) << 64n) + BigInt(wk.bw_lo ?? 0);
+    check(allSettled, `week ${w}: all ${staked.length} staked entries settled (players who never came back were settled by the bot)`);
+    check(freeNeverPaid, wk.reward_rule
+      ? `week ${w}: ${entries.length - staked.length} free player(s): never in the baskets; best free scores ${ft.best} (×${ft.bn}) and ${ft.second} (×${ft.sn}) match the contract, and their prizes (${showKoin(wk.pot_free)} VHP) were paid exactly`
+      : `week ${w}: ${entries.length - staked.length} free player(s) played without stake and were never eligible or paid`);
+    check(pointsMatch, `week ${w}: every player's points and eligibility match an independent recount`);
+    const onAw = (BigInt(wk.aw_hi ?? 0) << 64n) + BigInt(wk.aw_lo ?? 0);
+    check(N(wk.cutoff) === W8.cutoff && N(wk.winners) === winners.length && BigInt(wk.sum_w ?? 0) === W8.sumW && onBw === W8.bw && (!wk.reward_rule || onAw === W8.aw),
+      `week ${w}: winners match the independent recount — cutoff ${W8.cutoff} pts, ${winners.length} winner(s) = top 30% of ${elig.length} staked players (ties included)`);
+    const potIn = BigInt(wk.pot ?? 0), freeIn = potIn < FREE_PRIZE ? potIn : FREE_PRIZE;
+    check(BigInt(wk.pot_a ?? 0) + BigInt(wk.pot_b ?? 0) + BigInt(wk.pot_free ?? 0) === potIn && (!wk.reward_rule || BigInt(wk.pot_a ?? 0) === (potIn - freeIn) * 4000n / 10000n),
+      wk.reward_rule
+        ? `week ${w}: the pot splits exactly into the free prize ${showKoin(wk.pot_free)} + basket A ${showKoin(wk.pot_a)} (40% of the rest, by rank × stake up to 10 VHP) + basket B ${showKoin(wk.pot_b)} (by rank × stake)`
+        : `week ${w}: the pot splits exactly into basket A ${showKoin(wk.pot_a)} (by rank) + basket B ${showKoin(wk.pot_b)} (by rank × stake); the house produced ${(N(wk.house_ppm) / 10000).toFixed(1)}%`);
+    let payOk = true;
+    for (const s of winners) {
+      if (!s.e.claimed) continue;
+      const g = W8.groups.find((x) => x.pts === s.pts)!;
+      const expect = rewardOf(g, s.stake, BigInt(wk.pot_a), BigInt(wk.pot_b), W8.sumW, W8.bw, wk.reward_rule ? W8.aw : undefined);
+      if (BigInt(s.e.reward) !== expect) payOk = false;
+    }
+    check(payOk, `week ${w}: every claimed reward = basket A + basket B exactly as the rules say, to the unit`);
+    const voided = entries.filter((r) => r.entry.voided).length;
+    weekLog.push(`week ${w}: ${wk.questions} questions · gain ${showKoin(wk.gain)} → fee ${showKoin(wk.fee)} / pot ${showKoin(wk.pot)} (A ${showKoin(wk.pot_a)} by rank + B ${showKoin(wk.pot_b)} by rank × stake) · ${entries.length} played (${voided} voided), ${wk.eligible_players} eligible · cutoff ${wk.cutoff} pts · ${wk.winners} winner(s) · claimed ${showKoin(wk.claimed)}${wk.rolled_over ? " · ROLLED OVER" : ""}`);
+  }
+
+  // Habits behaved as designed.
+  const pr = async (p: Player, w: number) => (await sim.read("get_player", { player: p.key.getAddress(), week: String(w) })).entry;
+  const ghost = players.find((p) => p.habit === "ghost")!, quitter = players.find((p) => p.habit === "quitter")!;
+  const late = players.find((p) => p.habit === "late")!, tiny = players.find((p) => p.habit === "tiny")!;
+  const late0 = await pr(late, 0), late1 = await pr(late, 1);
+  check(BigInt(late0?.stake ?? 0) === 0n && BigInt(late1?.stake ?? 0) === stakes.late, "a deposit made during week 0 only counted from week 1 (week 0 was free play)");
+  check(tiny.stake === 0n && !!(await pr(tiny, 0)), "a fractional deposit (0.5 VHP) was refused; that player still played for free");
+  check(!!(await pr(quitter, 1))?.voided, "withdrawing everything mid-week took that player out of week 1");
+  const g0 = await pr(ghost, 0);
+  check(!!g0?.settled && !(g0?.claimed), "the player who vanished after week 0 was settled by the bot and their reward stays unclaimed (still producing)");
+
+  // Money: everything produced is accounted for exactly once.
+  const holdings = BigInt(st.vhp_balance) + BigInt(st.koin_balance);
+  const owed = ["total_stake", "seed_vhp", "seed_koin", "owner_share", "creator_fee", "pots_outstanding"].reduce((s, k) => s + BigInt(T[k]), 0n);
+  let gains = 0n, rolled = 0n, claimedOnChain = 0n;
+  for (let w = 0; w < N(T.weeks_closed); w++) {
+    const wk = (await sim.read("get_week", { week: String(w) })).week;
+    gains += BigInt(wk.gain);
+    if (wk.rolled_over) rolled += BigInt(wk.pot) - BigInt(wk.pot_free ?? 0);   // v5: the free prize is still paid (audit M-2)
+    claimedOnChain += BigInt(wk.claimed);
+  }
+  check(holdings >= owed, `the contract holds at least everything it owes (${showKoin(holdings)} ≥ ${showKoin(owed)})`);
+  check(gains - rolled + (holdings - owed) === minted,
+    `every unit produced was counted exactly once: weekly gains ${showKoin(gains)} − rolled over ${showKoin(rolled)} + not yet split ${showKoin(holdings - owed)} = produced ${showKoin(minted)}`);
+  const claimedByPlayers = players.reduce((s, p) => s + p.claimed, 0n);
+  check(claimedByPlayers === claimedOnChain, `players received exactly what the contract recorded as claimed (${showKoin(claimedOnChain)} VHP)`);
+  check(BigInt(T.seed_vhp) === 170_000n * VHP && BigInt(T.seed_koin) === 20_000n * VHP, "the seed is untouched");
+  check(BigInt(st.koin_balance) >= BigInt(T.seed_koin) + BigInt(T.creator_fee), "compounding never touched the seed KOIN or the unpaid creator fee");
+  const botFailures = sim.failures;
+
+  // Exit: every player takes everything back (decimals included), the owner takes the fee and the share, and the seed
+  // leaves after its 48-hour timelock. Whatever is still owed afterwards (rewards not yet claimed) stays fully covered.
+  let exitOk = true;
+  for (const p of players) {
+    const A = p.key.getAddress();
+    const pl = (await sim.read("get_player", { player: A, week: "0" })).player ?? {};
+    const all = BigInt(pl.stake ?? 0) + BigInt(pl.pending ?? 0);
+    if (all === 0n) continue;
+    const before = await sim.ledgerGet(2, A);
+    const piece = 12_345_678n;                                           // 0.12345678 VHP first, then the rest
+    if (all > piece && !(await act(p.key, "withdraw", { to: A, amount: String(piece) }))) exitOk = false;
+    if (!(await act(p.key, "withdraw", { to: A, amount: String(all > piece ? all - piece : all) }))) exitOk = false;
+    if ((await sim.ledgerGet(2, A)) - before !== all) exitOk = false;
+  }
+  const T2 = (await sim.read("get_state", {})).totals;
+  check(exitOk && BigInt(T2.total_stake ?? 0) === 0n, "every player withdrew everything, decimals included (0.12345678 first, then the rest), and got back exactly their stake");
+  const ownerA = owner.getAddress(), seedA = seedOwner.getAddress();
+  const feeBefore = await sim.ledgerGet(1, ownerA), shareBefore = await sim.ledgerGet(2, ownerA);
+  const feeOk = await act(owner, "claim_creator_fee", { to: ownerA });
+  const shareOk = BigInt(T2.owner_share ?? 0) === 0n || await act(owner, "claim_owner_share", { to: ownerA, amount: String(T2.owner_share) });
+  check(feeOk && shareOk && (await sim.ledgerGet(1, ownerA)) - feeBefore === BigInt(T2.creator_fee ?? 0) && (await sim.ledgerGet(2, ownerA)) - shareBefore === BigInt(T2.owner_share ?? 0),
+    `the owner collected exactly the creator fee (${showKoin(T2.creator_fee)} KOIN) and the owner share (${showKoin(T2.owner_share)} VHP)`);
+  const seedV0 = await sim.ledgerGet(2, seedA), seedK0 = await sim.ledgerGet(1, seedA);
+  let lastErr = "";
+  const actE = async (who: Signer, method: string, args: any) => { const r = await sim.sendAs([{ method, args }], [who.getAddress()], false); if (!r.ok) lastErr = `${method}: ${r.error}`; return r.ok; };
+  const req = await actE(seedOwner, "request_seed_withdrawal", { vhp: String(T2.seed_vhp), koin: String(T2.seed_koin) });
+  const early = await act(seedOwner, "execute_seed_withdrawal", {});
+  const tNow = N((await sim.read("get_state", {})).time);
+  sim.setHeight(sim.height + 60_000, tNow + 48 * HOUR_MS + 60_000);
+  for (let i = 0; i < 3; i++) {
+    const s = (await sim.read("get_state", {})).totals;
+    if (BigInt(s.seed_vhp ?? 0) === 0n && BigInt(s.seed_koin ?? 0) === 0n) break;
+    await actE(seedOwner, "execute_seed_withdrawal", {});
+  }
+  check(req && !early && (await sim.ledgerGet(2, seedA)) - seedV0 === BigInt(T2.seed_vhp) && (await sim.ledgerGet(1, seedA)) - seedK0 === BigInt(T2.seed_koin),
+    "the seed could not leave before its 48-hour timelock, then came back in full (170,000 VHP + 20,000 KOIN)" +
+    ` [request ${req}, early ${early}, VHP back ${showKoin((await sim.ledgerGet(2, seedA)) - seedV0)}, KOIN back ${showKoin((await sim.ledgerGet(1, seedA)) - seedK0)}, ` +
+    `left ${JSON.stringify((({ seed_vhp, seed_koin }) => ({ seed_vhp, seed_koin }))((await sim.read("get_state", {})).totals))}, last error ${lastErr || "none"}]`);
+  const s3 = await sim.read("get_state", {});
+  const owed3 = ["total_stake", "seed_vhp", "seed_koin", "owner_share", "creator_fee", "pots_outstanding"].reduce((s, k) => s + BigInt(s3.totals[k] ?? 0), 0n);
+  check(BigInt(s3.vhp_balance) + BigInt(s3.koin_balance) >= owed3,
+    `after everyone left, the contract still covers every unclaimed reward (${showKoin(BigInt(s3.vhp_balance) + BigInt(s3.koin_balance))} ≥ ${showKoin(owed3)})`);
+  check(alarmsDuringOutage >= 1, `the 3-hour outage of the pool's node raised the email alarm (${alarmsDuringOutage} hourly run(s) flagged it)`);
+  check(falseAlarms === 0, `no false production alarms in ${ticks} hourly runs`);
+  check(lateAfterOutage >= 1, `after the bot's ~20-hour outage, its first run flagged the overdue results (${lateAfterOutage} question(s); audit H-2)`);
+  check(otherProblems.length === 0, `no other problems were reported${otherProblems.length ? ": " + otherProblems.slice(0, 3).join("; ") : ""}`);
+  check(botFailures.length === 0, `the bot's own transactions never failed (${sim.calls} sent)${botFailures.length ? ": " + botFailures.slice(0, 3).map((f) => `${f.method}: ${f.error}`).join("; ") : ""}`);
+
+  console.log("\n" + weekLog.join("\n"));
+  const failed = checks.filter((c) => !c.ok).length;
+  console.log(`\n${ticks} bot runs, ${generatorRuns} generator runs, ${((Date.now() - t0) / 60000).toFixed(1)} min.`);
+  console.log(failed ? `\n${failed} of ${checks.length} checks FAILED.` : `\nAll ${checks.length} rehearsal checks passed.`);
+  process.exitCode = failed ? 1 : 0;
+}

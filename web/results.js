@@ -1,0 +1,393 @@
+/* The Results page (index.html#results): one tab per game, past and present.
+   "Daily Questions" is the question game's own results (drawn by app.js). Every other live game in games.json with
+   `"results": true` and a drawing below gets its own tab: index.html#results/race and so on.
+   Producer Race: every recorded week from the race recorder (race-data branch: index.json + W###.json), a day at a
+   time, each race with its winner, top 3, how the picks went, the player's own pick and points, and the full standings.
+   Who Signs Block X (R-BX-12): every recorded week from the Block X recorder (games-data branch: blockx/index.json +
+   blockx/W###.json), a day at a time, each target block with its signer, how the picks went, the player's own pick and
+   points, and void targets with their reason.
+   "Only mine" and search look through the whole week.
+   Read-only: no transaction, no storage, everything built with textContent. */
+(() => {
+  "use strict";
+  // What players call a week (weeks.js, D-063): the week of Mon 16 Nov is "Week 1", the week of Mon 9 Nov the "Test week"; earlier weeks show their date.
+  const WL = (w) => (window.KWeeks ? window.KWeeks.label(w) : `Week ${Number(w) + 1}`);
+  const WS = (w) => (window.KWeeks ? window.KWeeks.short(w) : String(Number(w) + 1));
+  const host = document.getElementById("res-games");
+  const M = window.KRaceMath;
+  if (!host || !M) return;
+  const W = window.KWallet;
+  // The Producer Race's other lengths (1-hour, 2-hour, daily, weekly) and points per place are live from M.TYPES_ON_WEEK (vault week 5):
+  // never hard-coded to a date, and never before it.
+  const typesOnFor = (w) => M.TYPES_ON_WEEK !== null && w >= M.TYPES_ON_WEEK;
+  const typesLive = () => typesOnFor(M.weekOf(Date.now()));
+  const PTS_TEXT = "Points are per place, by race: 1st / 2nd / 3rd score 3 / 2 / 1 in a 1-hour or 2-hour race, 4 / 2 / 1 in a 6-hour race, 6 / 3 / 2 in a daily race and 12 / 6 / 4 in the weekly race. A 2nd or 3rd place scores only if that producer signed at least one block.";
+  /** The how-to-play text on the home page: the old words until week 5, the new ones from it. */
+  function rulesText() {
+    if (!typesLive()) return;
+    const set = (id, t) => { const n = document.getElementById(id); if (n) n.textContent = t; };
+    set("rt-free-pts", "Points are per place: 1st, 2nd and 3rd score (12 / 6 / 4 in the weekly race, 6 / 3 / 2 daily, 4 / 2 / 1 in the 6-hour race, 3 / 2 / 1 in a 1-hour or 2-hour race).");
+    set("rt-open", "Races of five lengths run side by side: 1-hour, 2-hour, 6-hour (00:00, 06:00, 12:00 and 18:00 UTC), daily and weekly (Sunday's races are for fun: they count on All time, not the week)");
+    set("rt-watch-pts", PTS_TEXT);
+    set("rt-short-pts", "Pick the producer you think finishes 1st, 2nd or 3rd: each place scores, and the points depend on the race length.");
+    set("rt-step2", "A race lasts 1 hour, 2 hours, 6 hours, a day or a week; the Ruler places the producers 1st, 2nd and 3rd.");
+    set("rt-soon-h", "More races: live now");
+    const p = document.getElementById("rt-soon-2"); if (p) p.textContent = PTS_TEXT;
+    const one = document.getElementById("rt-soon-1"); if (one) one.textContent = "Five race lengths, one board. 1-hour, 2-hour, 6-hour, daily and weekly races run side by side, and points from every length add up on the same Producer Race board. Pick any length within your daily Mana.";
+    const three = document.getElementById("rt-soon-3"); if (three) three.hidden = true;
+    document.querySelectorAll("#race-types-soon").forEach((n) => n.classList.remove("rules-soon"));
+  }
+  rulesText();
+  const RAW = "https://raw.githubusercontent.com/bawcejawn/KnodeGames/";
+  const EXPLORER = "https://koinosscan.com/address/";
+  const NAMES = { "1Mpmf2ERhjYpX7CCiM11WERuM4j17uT1sr": "Knode Games pool", "1FKTpXBhhHEbu5vVchM8UsVbAvPArJsRmR": "Knode Games Swap" };
+  const ADDR = /^1[1-9A-HJ-NP-Za-km-z]{25,34}$/;
+  const $ = (id) => document.getElementById(id);
+  const me = () => (W && W.address) || "";
+  // Producer names (names.js): "Name · 1Abc12…wxyz", or the short address.
+  const nameOf = (a) => (window.KNames && typeof a === "string" ? window.KNames.of(a) : NAMES[a] || (typeof a === "string" ? a.slice(0, 5) + "…" + a.slice(-4) : ""));
+  const fmt = (n, d = 0) => (typeof n === "number" && isFinite(n) ? n.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d }) : "–");
+  const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  const utcTime = (t) => new Date(t).toISOString().slice(11, 16) + " UTC";
+  const utcDay = (t) => new Date(t).toLocaleDateString("en-US", { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" });
+
+  function el(tag, attrs, ...kids) {
+    const e = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs || {})) { if (v == null) continue; if (k === "text") e.textContent = v; else e.setAttribute(k, v); }
+    for (const c of kids) if (c != null && c !== false) e.append(c);
+    return e;
+  }
+  async function fetchJson(url) { const r = await fetch(url, { cache: "no-cache" }); if (!r.ok) throw new Error(String(r.status)); return r.json(); }
+  const link = (a) => (ADDR.test(a) ? el("a", { href: EXPLORER + a, target: "_blank", rel: "noopener noreferrer", class: "mono", text: nameOf(a) }) : el("span", { text: "–" }));
+
+  // ───────────────── Producer Race ─────────────────
+  const race = {
+    weeks: null, files: new Map(), ruler: new Map(), rulerFrom: null, rulerFailed: new Set(), rtried: new Set(), week: null, day: null, mine: false, q: "",
+    tfiles: new Map(), truler: new Map(), tfailed: new Set(), ttried: new Set(), type: null,
+    async open(box) {
+      this.box = box;
+      if (!this.weeks) {
+        box.replaceChildren(el("p", { class: "muted", text: "Loading race results…" }));
+        try {
+          const ix = await fetchJson(RAW + "race-data/index.json");
+          this.weeks = (ix && Array.isArray(ix.weeks) ? ix.weeks : []).filter((w) => Number.isInteger(w) && w >= 0 && w < 10000).sort((a, b) => b - a);
+        } catch { box.replaceChildren(el("p", { class: "muted", text: "Couldn't load race results right now. Try again in a moment." })); return; }
+      }
+      if (!this.weeks.length) { box.replaceChildren(el("div", { class: "empty", text: "No races recorded yet." })); return; }
+      if (this.week == null || !this.weeks.includes(this.week)) this.week = this.weeks[0];
+      await this.load(this.week);
+      this.draw();
+    },
+    async load(w) {
+      if (this.files.has(w) && this.rtried.has(w)) { await this.loadTyped(w); return; }
+      if (!this.files.has(w)) try {
+        const f = await fetchJson(RAW + `race-data/W${String(w).padStart(3, "0")}.json`);
+        if (f && f.v === 1 && f.week === w && Array.isArray(f.races)) this.files.set(w, f);
+      } catch { /* drawn as "couldn't load" */ }
+      this.rtried.add(w);
+      // The VHP ruler's cards for this week (R<week>.json), for the Void marks. Missing or off = no marks, never an error.
+      try {
+        const j = await fetchJson(RAW + `race-data/R${String(w).padStart(3, "0")}.json`);
+        if (j && j.v === 1 && j.week === w && Array.isArray(j.races)) { this.rulerFailed.delete(w); if (Number.isInteger(j.rulerFrom)) this.rulerFrom = j.rulerFrom; if (j.mode !== "off") this.ruler.set(w, j); }
+      } catch (e) { if (String(e && e.message) !== "404") { this.rulerFailed.add(w); this.rtried.delete(w); } /* 404: no ruler file this week */ }
+      await this.loadTyped(w);
+    },
+    /** The typed races of an ON week: T<www>.json (the races and picks) and R<www>-<t>.json (the Ruler's places, t = 1 to 4). Nothing before the types' week. */
+    async loadTyped(w) {
+      if (!typesOnFor(w) || this.ttried.has(w)) return;
+      this.ttried.add(w);
+      const p3 = String(w).padStart(3, "0");
+      // All five files at once (the T and R-1 files can be 1 to 2 MB each).
+      const tp = (async () => {
+        try {
+          const f = await fetchJson(RAW + `race-data/T${p3}.json`);
+          if (f && f.v === 1 && f.week === w && Array.isArray(f.races)) this.tfiles.set(w, f);
+        } catch (e) { if (String(e && e.message) !== "404") this.ttried.delete(w); /* 404: no typed races recorded yet */ }
+      })();
+      await Promise.all([tp, ...[1, 2, 3, 4].map(async (t) => {
+        const key = `${w}:${t}`;
+        try {
+          const j = await fetchJson(RAW + `race-data/R${p3}-${t}.json`);
+          if (j && j.v === 1 && j.week === w && Array.isArray(j.races)) { this.tfailed.delete(key); if (j.mode === "on" && j.shadow !== true) this.truler.set(key, j); }
+        } catch (e) { if (String(e && e.message) !== "404") { this.tfailed.add(key); this.ttried.delete(w); } }
+      })]);
+    },
+    /** Every race of the week the page can show: the 6-hour races, then the typed ones (each with its type, start and end). */
+    racesOf(w) {
+      const f = this.files.get(w), out = f ? f.races.map((r) => ({ ...r, type: 0 })) : [];
+      const tf = this.tfiles.get(w);
+      if (tf) for (const r of tf.races) {
+        const p = r && Number.isInteger(r.type) && r.type >= 1 && r.type <= 4 ? M.parseTypedId(r.id) : null;
+        if (!p || p.type !== r.type) continue;                                 // not a race of that type: skipped, never guessed
+        const start = M.typedStart(p.type, p.index);
+        if (M.weekOf(start) !== w) continue;
+        out.push({ ...r, start, end: start + M.TYPES[p.type].len });
+      }
+      return out;
+    },
+    /** One race's facts, from the recorder's file. */
+    facts(r) {
+      const now = Date.now(), res = r.result;
+      const type = r.type || 0, typed = type > 0;
+      const KV = window.KRulerVoid, rf = typed ? this.truler.get(`${this.week}:${type}`) : this.ruler.get(this.week), re = rf && rf.races.find((e) => e && e.id === r.id);
+      // Repo Lens #G-28 G28-1: in a week the ruler is ON for, the board pays the ruler's 1st / 2nd / 3rd, so this page does too.
+      // Repo Lens #G-45 G45-1: a week whose ruler file failed to load, or that a ruler file says is ON but whose own file
+      // isn't in: "Checking", never the handicap result.
+      // The typed races (option A) are scored by the Ruler only: no Ruler file for the type yet means "Checking", never a handicap result.
+      const RO = KV && KV.ruledOutcome ? (rf ? KV.ruledOutcome(re, rf) : typed ? { pending: true } : this.rulerFailed.has(this.week) || (Number.isInteger(this.rulerFrom) && this.week >= this.rulerFrom) ? { pending: true } : null) : null;
+      let status = now < r.start ? "up" : now < r.end ? "live" : !res ? "checking" : res.missed ? "missed" : res.final ? "final" : "checking";
+      if (status === "final" && RO && RO.pending) status = "ruler";
+      const ruled = status === "final" && !!RO && !RO.pending;
+      const st = status !== "final" ? [] : ruled ? RO.standings : Array.isArray(res.standings) ? res.standings : [];
+      const picks = status === "final" && Array.isArray(res.picks) ? res.picks : [];
+      const wins = ruled ? (RO.first ? [RO.first] : []) : M.winners(st), show = ruled ? RO.shows : M.shows(st);
+      const isWin = ruled ? (p) => KV.ruledPick(RO, p[1]).win : (p) => p[3] === 1;
+      const isShow = ruled ? (p) => KV.ruledPick(RO, p[1]).show : (p) => !isWin(p) && (p.length > 5 ? p[5] === 1 : show.includes(p[1]));
+      const my = me() ? picks.find((p) => p[0] === me()) : null;
+      const V = KV ? window.KRulerVoid.rulerVoids(re, rf) : { has: false, shadow: false, wholeVoid: false, voids: [] };
+      const mp = my ? M.pagePick(type, r.start, st, my[1], isWin(my), isShow(my)) : { label: "", pts: 0 };   // D-173: points per place once the types are on
+      return { r, type, status, st, picks, wins, show, isWin, isShow, my, V, ruled, myPts: mp.pts, myLabel: mp.label };
+    },
+    draw() {
+      const f = this.files.get(this.week), box = this.box, tf = this.tfiles.get(this.week);
+      const weekStart = M.weekStart(this.week), now = Date.now();
+      const everything = (f ? this.racesOf(this.week) : []).map((r) => this.facts(r)).filter((x) => x.status !== "up");
+      const hasTyped = everything.some((x) => x.type > 0);
+      if (this.type != null && !everything.some((x) => x.type === this.type)) this.type = null;
+      const all = this.type == null ? everything : everything.filter((x) => x.type === this.type);
+      const dayOf = (x) => Math.floor((x.r.start - weekStart) / M.DAY);
+      const ended = all.filter((x) => x.status !== "live");
+      if (this.day == null || !all.some((x) => dayOf(x) === this.day)) this.day = ended.length ? dayOf(ended.reduce((m, x) => (x.r.start > m.r.start ? x : m))) : 0;
+
+      // Band: title, the player's week, weeks and days.
+      // D-129 (Repo Lens #B-7 B7-4): Sunday fun races count for no week, so they are left out of "pts this week".
+      const mineAll = all.filter((x) => x.my && !M.restRace(x.r.start));
+      const score = me() ? el("p", { class: "rband-score" }, el("b", { text: fmt(mineAll.reduce((s, x) => s + x.myPts, 0)) }), ` pts this week · ${mineAll.length} pick${mineAll.length === 1 ? "" : "s"}`)
+        : el("p", { class: "rband-score", text: `${ended.filter((x) => x.status === "final").length} races final this week` });
+      const weeks = el("div", { class: "rweeks", role: "group", "aria-label": "Week" }, ...this.weeks.map((w) => {
+        const b = el("button", { type: "button", "aria-pressed": String(w === this.week), text: w === M.weekOf(now) ? `This week (${WS(w)})` : `${WL(w)}` });
+        b.addEventListener("click", async () => { this.week = w; this.day = null; await this.load(w); this.draw(); });
+        return b;
+      }));
+      const days = el("div", { class: "rdays", role: "group", "aria-label": "Day" }, ...DAYS.map((d, i) => {
+        const has = all.some((x) => dayOf(x) === i);
+        const b = el("button", { type: "button", "aria-pressed": String(i === this.day && !this.mine && !this.q), text: d });
+        if (!has) b.disabled = true;
+        b.addEventListener("click", () => { this.day = i; this.mine = false; this.q = ""; this.draw(); });
+        return b;
+      }));
+      // The race lengths (only in a week that has typed races): all of them, or one length.
+      const lengths = hasTyped ? el("div", { class: "rdays rtypes", role: "group", "aria-label": "Race length" }, ...[[null, "All"], ...[1, 2, 0, 3, 4].map((t) => [t, M.TYPES[t].name])].map(([t, label]) => {
+        const b = el("button", { type: "button", "aria-pressed": String(this.type === t), text: label });
+        b.addEventListener("click", () => { this.type = t; this.day = null; this.draw(); });
+        return b;
+      })) : null;
+      const band = el("div", { class: "rband" }, el("div", { class: "rband-top" }, el("h1", { text: "Race results" }), score), weeks, lengths, days);
+
+      // Tools: search the week, only mine.
+      const search = el("input", { type: "search", "aria-label": "Find a producer or wallet", placeholder: "Find a producer or wallet", autocomplete: "off" });
+      search.value = this.q;
+      search.addEventListener("input", () => { this.q = search.value.trim(); this.drawList(); });
+      const mineBtn = el("button", { type: "button", class: "rmine", "aria-pressed": String(this.mine), text: "Only mine" });
+      mineBtn.hidden = !me();
+      mineBtn.addEventListener("click", () => { this.mine = !this.mine; mineBtn.setAttribute("aria-pressed", String(this.mine)); this.drawList(); });
+      const tools = el("div", { class: "rtools" }, el("label", { class: "rsearch" }, search), mineBtn);
+
+      this.list = el("div", { class: "results rr-list" });
+      this.all = all; this.dayOf = dayOf;
+      box.replaceChildren(band, tools, f ? this.list : el("div", { class: "empty", text: "Couldn't load this week's races. Try again in a moment." }),
+        typesOnFor(this.week) ? el("p", { class: "muted res-foot", text: PTS_TEXT }) : null,
+        el("p", { class: "muted res-foot" }, "Results become final once their blocks are irreversible and two nodes agree. ", el("a", { href: "race.html", text: "Watch the live race" }), " · ", el("a", { href: "index.html#leaderboard/race", text: "Race leaderboard" }), ...(typesOnFor(this.week) ? [" · ", el("a", { href: "ruler.html", text: "How the Ruler works" })] : [])));
+      if (f) this.drawList();
+    },
+    drawList() {
+      const q = this.q.toLowerCase();
+      const hit = (x) => !q || [x.r.id, ...x.st.slice(0, 3).map((s) => s.a), ...x.picks.map((p) => p[0]), ...x.picks.map((p) => p[1]), ...x.st.slice(0, 3).map((s) => nameOf(s.a))].some((t) => String(t).toLowerCase().includes(q));
+      const filtered = this.mine || q ? this.all.filter((x) => (!this.mine || x.my) && hit(x)) : this.all.filter((x) => this.dayOf(x) === this.day);
+      const rows = filtered.slice().sort((a, b) => b.r.start - a.r.start);
+      this.list.replaceChildren(...(rows.length ? rows.map((x) => this.card(x))
+        : [el("div", { class: "empty", text: this.mine ? "No picks of yours this week." : q ? "Nothing matches that search this week." : "No races finished on this day yet." })]));
+    },
+    card(x) {
+      const { r, status } = x;
+      const PILL = { live: "Live now", final: "Final", checking: "Checking", missed: "Not recorded", ruler: "Checking" };
+      const head = el("div", { class: "rr-head" },
+        el("h3", {}, x.type > 0 ? `${M.TYPES[x.type].name} race · ${utcDay(r.start)}${x.type >= 3 ? "" : `, ${utcTime(r.start)}`}` : `Race ${Math.floor((r.start % M.DAY) / M.RACE) + 1} · ${utcDay(r.start)}, ${utcTime(r.start)}`),
+        el("span", { class: `rr-pill ${status}`, text: PILL[status] || status }));
+      const body = [];
+      if (x.type > 0 && M.restRace(r.start)) body.push(el("p", { class: "res-line muted", text: "Fun race: Sunday's races count for no week." }));
+      if (status === "live") body.push(el("p", { class: "res-line" }, "This race is running now. ", el("a", { href: "race.html", text: "Watch it live" })));
+      else if (status === "missed") body.push(el("p", { class: "res-line muted", text: "This race wasn't recorded, so it scores nobody." }));
+      else if (status === "ruler") body.push(el("p", { class: "res-line muted", text: "Finished: waiting for the Ruler's 1st, 2nd and 3rd (usually 1 to 2 hours after the race). Picks score on them." }));
+      else if (status === "checking") body.push(el("p", { class: "res-line muted", text: "Finished: the result is being checked against two nodes. It's final within a few hours." }));
+      else {
+        const MED = ["🥇", "🥈", "🥉"];
+        body.push(el("ol", { class: "rr-podium" }, ...x.st.slice(0, 3).map((s, i) => el("li", {}, el("span", { class: "rr-med", text: MED[i] }), link(s.a), el("span", { class: "muted", text: x.ruled ? " (Ruler)" : ` ${fmt(s.steps, 1)} steps` })))));
+        if (x.ruled && !x.st.length) body.push(el("p", { class: "res-line muted", text: "Every producer was void, so no pick in this race scores." }));
+        const nW = x.picks.filter(x.isWin).length, nS = x.picks.filter(x.isShow).length;
+        body.push(el("p", { class: "res-line rr-picks" }, x.picks.length ? `${x.picks.length} pick${x.picks.length === 1 ? "" : "s"}: ${nW} won, ${nS} showed` : "No picks on this race."));
+        const V = x.V;
+        if (V && V.has && (V.wholeVoid || V.voids.length)) {
+          const trial = V.shadow ? el("span", { class: "void-chip", text: "Trial, counts for nothing" }) : null;
+          body.push(el("p", { class: "res-line rr-void" }, trial, trial ? " " : null,
+            V.wholeVoid ? "Void race: every producer was void, so no pick scores." : el("span", {}, el("span", { class: "void-chip", title: "Its VHP moved too much during this race, so it didn't count. Picks on it count as a loss.", text: "Void" }), " ", ...V.voids.flatMap((a, i) => [i ? ", " : null, link(a)]), " (not counted in the ruler's result)")));
+        }
+        if (x.my) {
+          const outcome = x.myPts ? `${x.isWin(x.my) ? "won" : "showed"}${x.myLabel && x.myLabel !== "Win" && x.myLabel !== "Show" ? ` (${x.myLabel})` : ""} · +${x.myPts} pt${x.myPts === 1 ? "" : "s"}` : "missed · 0 pts";
+          body.push(el("p", { class: `res-line rr-mine ${x.myPts ? "ok" : ""}` }, el("b", { text: "You: " }), link(x.my[1]), ` ${outcome}`));
+        }
+        body.push(el("details", { class: "res-how" }, el("summary", {}, "Full standings"),
+          el("div", { class: "table-wrap" }, el("table", { class: "board rr-table" },
+            el("thead", {}, el("tr", {}, el("th", { text: "#" }), el("th", { text: "Producer" }), el("th", { class: "num", text: "Steps" }), el("th", { class: "num", text: "Blocks" }))),
+            el("tbody", {}, ...x.st.map((s, i) => el("tr", { class: x.my && x.my[1] === s.a ? "me" : null }, el("td", { text: String(i + 1) }), el("td", {}, link(s.a), x.V && x.V.voids.includes(s.a) ? el("span", { class: "void-chip", text: "Void" }) : null), el("td", { class: "num", text: x.ruled ? "–" : fmt(s.steps, 1) }), el("td", { class: "num", text: x.ruled ? "–" : fmt(s.blocks) }))))))));
+      }
+      return el("article", { class: `res rr res-st-${status === "final" ? (x.my ? (x.myPts ? "right" : "wrong") : "none") : "wait"}` }, head, ...body);
+    },
+  };
+
+  // ───────────────── Who Signs Block X ─────────────────
+  // Points are stored ×100 (a right pick scores 100–300: ×1 to ×3), as on blockx.html.
+  const bxPts = (h) => fmt((Number(h) || 0) / 100, 2);
+  const blockx = {
+    weeks: null, files: new Map(), week: null, day: null, mine: false, q: "",
+    async open(box) {
+      this.box = box;
+      if (!this.weeks) {
+        box.replaceChildren(el("p", { class: "muted", text: "Loading Block X results…" }));
+        try {
+          const ix = await fetchJson(RAW + "games-data/blockx/index.json");
+          this.weeks = (ix && Array.isArray(ix.weeks) ? ix.weeks : []).filter((w) => Number.isInteger(w) && w >= 0 && w < 10000).sort((a, b) => b - a);
+        } catch { box.replaceChildren(el("p", { class: "muted", text: "Couldn't load Block X results right now. Try again in a moment." })); return; }
+      }
+      if (!this.weeks.length) { box.replaceChildren(el("div", { class: "empty", text: "No Block X targets recorded yet." })); return; }
+      if (this.week == null || !this.weeks.includes(this.week)) this.week = this.weeks[0];
+      await this.load(this.week);
+      this.draw();
+    },
+    async load(w) {
+      if (this.files.has(w)) return;
+      try {
+        const f = await fetchJson(RAW + `games-data/blockx/W${String(w).padStart(3, "0")}.json`);
+        if (f && f.v === 1 && f.week === w && Array.isArray(f.targets)) this.files.set(w, f);
+      } catch { /* drawn as "couldn't load" */ }
+    },
+    /** One target's facts, from the recorder's file: [player, producer, pick time, points ×100, staked]. */
+    facts(t) {
+      const picks = Array.isArray(t.picks) ? t.picks.filter((p) => Array.isArray(p) && ADDR.test(p[0]) && ADDR.test(p[1])) : [];
+      const isVoid = typeof t.void === "string";
+      const right = (p) => !isVoid && p[1] === t.signer && Number(p[3]) > 0;
+      const my = me() ? picks.find((p) => p[0] === me()) : null;
+      return { t, isVoid, picks, right, my, myPts: my && right(my) ? Number(my[3]) : 0, fun: M.restRace(t.time) };
+    },
+    draw() {
+      const f = this.files.get(this.week), box = this.box, now = Date.now();
+      const weekStart = f && Number.isFinite(f.start) ? f.start : 0;
+      const all = f ? f.targets.filter((t) => t && Number.isInteger(t.height) && Number.isFinite(t.time)).map((t) => this.facts(t)) : [];
+      const dayOf = (x) => Math.floor((x.t.time - weekStart) / M.DAY);
+      if (this.day == null) { const last = all.reduce((m, x) => Math.max(m, dayOf(x)), -1); this.day = last >= 0 ? Math.min(6, last) : 0; }
+      // D-129 (R-BX-23): Sunday targets are fun rounds and count for no week, so they are left out of "pts this week".
+      const mineAll = all.filter((x) => x.my && !x.fun);
+      const score = me() ? el("p", { class: "rband-score" }, el("b", { text: bxPts(mineAll.reduce((s, x) => s + x.myPts, 0)) }), ` pts this week · ${mineAll.length} pick${mineAll.length === 1 ? "" : "s"}`)
+        : el("p", { class: "rband-score", text: `${all.filter((x) => !x.isVoid && !x.fun).length} targets scored this week` });
+      const weeks = el("div", { class: "rweeks", role: "group", "aria-label": "Week" }, ...this.weeks.map((w) => {
+        const b = el("button", { type: "button", "aria-pressed": String(w === this.week), text: w === M.weekOf(now) ? `This week (${WS(w)})` : `${WL(w)}` });
+        b.addEventListener("click", async () => { this.week = w; this.day = null; await this.load(w); this.draw(); });
+        return b;
+      }));
+      const days = el("div", { class: "rdays", role: "group", "aria-label": "Day" }, ...DAYS.map((d, i) => {
+        const has = all.some((x) => dayOf(x) === i);
+        const b = el("button", { type: "button", "aria-pressed": String(i === this.day && !this.mine && !this.q), text: d });
+        if (!has) b.disabled = true;
+        b.addEventListener("click", () => { this.day = i; this.mine = false; this.q = ""; this.draw(); });
+        return b;
+      }));
+      const band = el("div", { class: "rband" }, el("div", { class: "rband-top" }, el("h1", { text: "Block X results" }), score), weeks, days);
+      const search = el("input", { type: "search", "aria-label": "Find a producer or wallet", placeholder: "Find a producer or wallet", autocomplete: "off" });
+      search.value = this.q;
+      search.addEventListener("input", () => { this.q = search.value.trim(); this.drawList(); });
+      const mineBtn = el("button", { type: "button", class: "rmine", "aria-pressed": String(this.mine), text: "Only mine" });
+      mineBtn.hidden = !me();
+      mineBtn.addEventListener("click", () => { this.mine = !this.mine; mineBtn.setAttribute("aria-pressed", String(this.mine)); this.drawList(); });
+      const tools = el("div", { class: "rtools" }, el("label", { class: "rsearch" }, search), mineBtn);
+      this.list = el("div", { class: "results rr-list" });
+      this.all = all; this.dayOf = dayOf;
+      box.replaceChildren(band, tools, f ? this.list : el("div", { class: "empty", text: "Couldn't load this week's targets. Try again in a moment." }),
+        el("p", { class: "muted res-foot" }, "A target is recorded once its block is irreversible and two nodes agree; it is void (no points) when no handicap card can score it. ", el("a", { href: "blockx.html", text: "Pick the next blocks" }), " · ", el("a", { href: "index.html#leaderboard/blockx", text: "Block X leaderboard" })));
+      if (f) this.drawList();
+    },
+    drawList() {
+      const q = this.q.toLowerCase();
+      const hit = (x) => !q || [String(x.t.height), x.t.signer, nameOf(x.t.signer), ...x.picks.map((p) => p[0]), ...x.picks.map((p) => p[1]), ...x.picks.map((p) => nameOf(p[1]))].some((v) => String(v || "").toLowerCase().includes(q));
+      const filtered = this.mine || q ? this.all.filter((x) => (!this.mine || x.my) && hit(x)) : this.all.filter((x) => this.dayOf(x) === this.day);
+      const rows = filtered.slice().sort((a, b) => b.t.time - a.t.time);
+      this.list.replaceChildren(...(rows.length ? rows.map((x) => this.card(x))
+        : [el("div", { class: "empty", text: this.mine ? "No picks of yours this week." : q ? "Nothing matches that search this week." : "No targets recorded on this day yet." })]));
+    },
+    card(x) {
+      const { t } = x;
+      const head = el("div", { class: "rr-head" },
+        el("h3", {}, `Block ${fmt(t.height)} · ${utcDay(t.time)}, ${utcTime(t.time)}`),
+        el("span", { class: `rr-pill ${x.isVoid ? "missed" : "final"}`, text: x.isVoid ? "Void" : x.fun ? "Fun round · not the week" : "Final" }));
+      const body = [el("p", { class: "res-line" }, "Signed by ", link(t.signer))];
+      if (x.isVoid) body.push(el("p", { class: "res-line muted", text: `Void, no points: ${String(t.void).slice(0, 200)}` }));
+      else {
+        const nR = x.picks.filter(x.right).length;
+        body.push(el("p", { class: "res-line rr-picks", text: x.picks.length ? `${x.picks.length} pick${x.picks.length === 1 ? "" : "s"}: ${nR} right` : "No picks on this block." }));
+      }
+      if (x.my) {
+        const outcome = x.isVoid ? "void · 0 pts" : x.right(x.my) ? `right · +${bxPts(x.my[3])} pts` : "missed · 0 pts";
+        body.push(el("p", { class: `res-line rr-mine ${x.myPts ? "ok" : ""}` }, el("b", { text: "You: " }), link(x.my[1]), ` ${outcome}`));
+      }
+      if (x.picks.length) {
+        const sorted = x.picks.slice().sort((a, b) => Number(b[3]) - Number(a[3]));
+        body.push(el("details", { class: "res-how" }, el("summary", {}, "All picks"),
+          el("div", { class: "table-wrap" }, el("table", { class: "board rr-table" },
+            el("thead", {}, el("tr", {}, el("th", { text: "Player" }), el("th", { text: "Pick" }), el("th", { class: "num", text: "Points" }))),
+            el("tbody", {}, ...sorted.map((p) => el("tr", { class: p[0] === me() ? "me" : null }, el("td", {}, link(p[0])), el("td", {}, link(p[1])), el("td", { class: "num", text: bxPts(x.right(p) ? p[3] : 0) }))))))));
+      }
+      return el("article", { class: `res rr res-st-${x.isVoid ? "wait" : x.my ? (x.myPts ? "right" : "wrong") : "none"}` }, head, ...body);
+    },
+  };
+
+  // ───────────────── tabs ─────────────────
+  // A drawing per game; a game shows here when games.json says `"results": true` and it has a drawing.
+  // Producer Bracket: the week-by-week results live on the Bracket page until its first week is final.
+  const bracket = {
+    open(box) {
+      box.replaceChildren(el("div", { class: "empty" },
+        el("p", { text: "The Producer Bracket's weekly results (the champion, every round and your points) are on the Bracket page. They are listed here once its first week is final." }),
+        el("p", {}, el("a", { class: "btn btn-primary", href: "bracket.html", text: "Open the Bracket" }))));
+    },
+  };
+  const ADAPTERS = { race, blockx, bracket };
+  let games = [{ id: "questions", name: "Daily Questions" }], current = "questions";
+  const qPart = $("res-q"), gPart = $("res-g");
+
+  function buttons() {
+    host.replaceChildren(...games.map((g) => {
+      const b = el("button", { type: "button", "aria-pressed": String(g.id === current), text: g.name });
+      b.addEventListener("click", () => { location.hash = g.id === "questions" ? "#results" : `#results/${g.id}`; });
+      return b;
+    }));
+  }
+  function show(id) {
+    if (!games.some((g) => g.id === id)) id = "questions";
+    current = id; buttons();
+    qPart.hidden = id !== "questions"; gPart.hidden = id === "questions";
+    if (id !== "questions") ADAPTERS[id].open(gPart);
+  }
+  function route() { const [view, sub] = (location.hash || "").slice(1).split("/"); if (view === "results") show(sub || "questions"); }
+  async function load() {
+    try {
+      const list = (await fetchJson("games.json")).games;
+      const extra = (Array.isArray(list) ? list : []).filter((g) => g && g.status === "live" && g.results === true && ADAPTERS[g.id]
+        && typeof g.name === "string" && g.name.length <= 40).map((g) => ({ id: g.id, name: g.name }));
+      games = [games[0], ...extra];
+    } catch { /* only the question game */ }
+    buttons(); route();
+  }
+  if (window.KNames) window.KNames.onChange(() => { if (current !== "questions" && ADAPTERS[current]) ADAPTERS[current].open(gPart); });
+  window.addEventListener("hashchange", route);
+  if (W && W.subscribe) W.subscribe(() => { const a = ADAPTERS[current]; if (current !== "questions" && a && a.weeks) a.draw(); });
+  load();
+})();

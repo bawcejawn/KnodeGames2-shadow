@@ -1,0 +1,120 @@
+/**
+ * Offline safety check for the mana sponsor contract: run after `npm run build`, before anything touches the chain.
+ * No network, no keys.
+ */
+import fs from "node:fs";
+import { Signer, Contract, Provider, Serializer } from "koilib";
+
+let failures = 0;
+const ok = (cond: boolean, what: string) => { console.log(`${cond ? "PASS" : "FAIL"}  ${what}`); if (!cond) failures++; };
+
+const WASM = "build/release/contract.wasm", WAT = "build/release/contract.wat", ABI = "abi/sponsor.koilib.json";
+ok(fs.existsSync(WASM), `${WASM} exists`);
+const size = fs.existsSync(WASM) ? fs.statSync(WASM).size : 0;
+ok(size > 5_000 && size < 80_000, `contract size ${(size / 1024).toFixed(1)} KB`);
+const wat = fs.existsSync(WAT) ? fs.readFileSync(WAT, "utf8") : "";
+ok(/\(export "_start"/.test(wat) && !/\(start /.test(wat), "exports _start (Koinos VM entry)");
+ok(!/^\s+memory\.(copy|fill)\s*$/m.test(wat), "no bulk-memory instructions");
+ok(!/\b(i32|i64)\.extend(8|16|32)_s\b/.test(wat), "no sign-extension instructions");
+
+ok(fs.existsSync(ABI), `${ABI} exists`);
+const abi = fs.existsSync(ABI) ? JSON.parse(fs.readFileSync(ABI, "utf8")) : { methods: {} };
+for (const m of ["authorize", "get_config", "get_usage", "get_total_usage", "would_pay", "set_config"]) ok(!!abi.methods[m], `ABI has ${m}`);
+for (const m of ["get_config", "get_usage", "get_total_usage", "would_pay"]) ok(abi.methods[m]?.read_only === true, `${m} is read-only`);
+// The website (wallet.js) and the tools (bot/sponsor.ts) carry these entry points: they must match the built contract.
+const SITE: Record<string, number> = { would_pay: 0xda1fd8f5, get_config: 0xbc4fcdd4 };
+for (const [m, ep] of Object.entries(SITE)) ok(abi.methods[m]?.entry_point === ep, `website entry point for ${m} matches`);
+const site = fs.existsSync("../../web/wallet.js") ? fs.readFileSync("../../web/wallet.js", "utf8") : "";
+ok(/0xda1fd8f5/.test(site), "wallet.js asks would_pay at 0xda1fd8f5");
+
+// The player actions the contract pays for are the game's and the Desk's entry points by name.
+const game = JSON.parse(fs.readFileSync("../vault/abi/kpred.koilib.json", "utf8"));
+const desk = JSON.parse(fs.readFileSync("../desk/abi/desk.koilib.json", "utf8"));
+const raceAbi = JSON.parse(fs.readFileSync("../race/abi/race.koilib.json", "utf8"));
+const src = fs.readFileSync("assembly/Sponsor.ts", "utf8");
+const pinned: Record<string, [any, string]> = {
+  GAME_DEPOSIT_VHP: [game, "deposit_vhp"], GAME_DEPOSIT_KOIN: [game, "deposit_koin"], GAME_WITHDRAW: [game, "withdraw"],
+  GAME_ANSWER: [game, "answer"], GAME_SETTLE: [game, "settle"], GAME_CLAIM: [game, "claim"],
+  GAME_CLOSE_WEEK: [game, "close_week"], GAME_FINALIZE_WEEK: [game, "finalize_week"], DESK_SWAP: [desk, "swap"],
+  RACE_PICK: [raceAbi, "pick"],
+};
+for (const [k, [a, name]] of Object.entries(pinned)) {
+  const m = src.match(new RegExp(`${k}: u32 = (0x[0-9a-f]+)`));
+  ok(!!m && Number(m[1]) === a.methods[name]?.entry_point, `${k} = ${name} (${a.methods[name]?.entry_point?.toString(16)})`);
+}
+
+// Audit S-1: the sponsor reads a pick's arguments exactly as the race contract does (same fields, numbers and types).
+const fieldsOf = (a: any, pkg: string, msg: string) => JSON.stringify(a.koilib_types?.nested?.[pkg]?.nested?.[msg]?.fields ?? null);
+ok(fieldsOf(abi, "sponsor", "race_pick_args") === fieldsOf(raceAbi, "race", "pick_arguments") && fieldsOf(abi, "sponsor", "race_pick_args") !== "null",
+  "race_pick_args = the race contract's pick_arguments, field for field");
+// Audit SP-28: the sponsor reads the game's get_player exactly as the game answers it: player_object stake/pending
+// in field 1, and active_stake (the stake counting for the asked week) in field 3; get_player_arguments week = 2.
+const gf = (msg: string, field: string) => game.koilib_types?.nested?.kpred?.nested?.[msg]?.fields?.[field];
+const sf = (msg: string, field: string) => abi.koilib_types?.nested?.sponsor?.nested?.[msg]?.fields?.[field];
+ok(gf("get_player_result", "active_stake")?.id === 3 && sf("game_get_player_result", "active_stake")?.id === 3 && sf("game_get_player_result", "active_stake")?.type === gf("get_player_result", "active_stake")?.type,
+  "game_get_player_result.active_stake = the game's get_player_result.active_stake (field 3)");
+ok(gf("get_player_arguments", "week")?.id === 2 && sf("game_get_player_args", "week")?.id === 2, "game_get_player_args.week = the game's get_player_arguments.week (field 2)");
+// Audit SP-26: the vault (v6) calls and read, against the committed v6 ABI (contracts/vault/abi/kpred-v6.koilib.json).
+const v6 = JSON.parse(fs.readFileSync("../vault/abi/kpred-v6.koilib.json", "utf8"));
+const v6pins: Record<string, string> = { GAME_GET_GAME_PLAYER: "get_game_player", GAME_DEPOSIT_TO: "deposit_to", GAME_WITHDRAW_FROM: "withdraw_from",
+  GAME_MOVE_STAKE: "move_stake", GAME_CLAIM_GAME: "claim_game", GAME_FINALIZE_GAME_WEEK: "finalize_game_week" };
+for (const [k, name] of Object.entries(v6pins)) {
+  const m = src.match(new RegExp(`${k}: u32 = (0x[0-9a-f]+)`));
+  ok(!!m && Number(m[1]) === v6.methods[name]?.entry_point, `${k} = vault v6 ${name} (${v6.methods[name]?.entry_point?.toString(16)})`);
+}
+const v6f = (msg: string, field: string) => v6.koilib_types?.nested?.kpred?.nested?.[msg]?.fields?.[field];
+ok(["player", "game", "week"].every((f, i) => v6f("get_game_player_arguments", f)?.id === i + 1 && sf("game_get_game_player_args", f)?.id === i + 1), "game_get_game_player_args = the vault's get_game_player_arguments (player 1, game 2, week 3)");
+ok(v6f("get_game_player_result", "week_stake")?.id === 4 && sf("game_get_game_player_result", "week_stake")?.id === 4, "week_stake = the vault's get_game_player_result field 4");
+ok(v6f("get_player_result", "active_stake")?.id === 3, "the vault's get_player_result.active_stake is field 3 too");
+const body = (f: string) => fs.readFileSync(f, "utf8").replace(/^\/\/ A copy of[^\n]*\n/, "");
+// v3: the tests' copy of the Picks decoder, and the Picks pick_arguments shape the tool allowlists (bot/sponsor.ts
+// PICKS_ARG_TYPES: player bytes, game varint, round varint, producers bytes, number varint).
+const picksAbiFile = "../picks/abi/picks.koilib.json";
+// Fix-check S3-7: required, not skipped when missing.
+ok(fs.existsSync(picksAbiFile), `${picksAbiFile} exists`);
+if (fs.existsSync(picksAbiFile)) {
+  const picksAbi = JSON.parse(fs.readFileSync(picksAbiFile, "utf8"));
+  const f = picksAbi.koilib_types?.nested?.picks?.nested?.pick_arguments?.fields ?? {};
+  const shape = Object.entries(f).map(([n, x]: any) => `${x.id}:${x.type}${x.rule === "repeated" ? "[]" : ""}`).join(",");
+  // Picks v1 is fields 1 to 5. Picks v2 (the Combo Card PR) adds field 6, legs (repeated leg): the same pick, and the
+  // sponsor's card config (PICKS_ARG_TYPES_CARDS, used only once picks-data/deployment.json says "cards": true) covers it.
+  const V1 = "1:bytes,2:uint32,3:uint64,4:bytes[],5:uint64";
+  ok(shape === V1 || shape === V1 + ",6:leg[]", `Picks pick_arguments shape is player, game, round, producers[], number (+ legs[] in v2) (${shape})`);
+  ok(picksAbi.methods?.pick?.entry_point === 0x8ce33c6c, "Picks pick entry point is 0x8ce33c6c");
+  // Fix-check S3-2: no nested messages in the allowlisted arguments (every field is a scalar, bytes or a string).
+  const scalars = new Set(["bytes", "string", "uint32", "uint64", "int32", "int64", "bool", "sint32", "sint64", "fixed32", "fixed64", "sfixed32", "sfixed64"]);
+  // Picks v2: the one nested message allowed is field 6, a repeated `leg` of exactly code (uint32), round (uint64) and
+  // producer (bytes), all scalars. To the sponsor it is a repeated length-delimited field (0x13); the Picks contract
+  // checks the legs themselves.
+  const nested = picksAbi.koilib_types?.nested?.picks?.nested ?? {};
+  const legShape = Object.entries(nested.leg?.fields ?? {}).map(([n, x]: any) => `${x.id}:${n}:${x.type}${x.rule ? "[" + x.rule + "]" : ""}`).join(",");
+  ok(Object.values(f).every((x: any) => scalars.has(x.type) || (x.id === 6 && x.type === "leg" && x.rule === "repeated")), "Picks pick_arguments has no nested messages (except v2's repeated legs, field 6)");
+  if (f.legs) ok(legShape === "1:code:uint32,2:round:uint64,3:producer:bytes", `Picks v2 leg is code, round, producer, all scalars, nothing nested (${legShape})`);
+  // The sponsor tool's arg_types strings, worked out from the ABI: one byte per field, wire type + 1, plus 0x10 if repeated.
+  const wire = (x: any) => (x.type === "bytes" || x.type === "string" || !scalars.has(x.type) ? 2 : 0);
+  const argTypes = (fields: any[]) => "0x" + fields.sort((a, b) => a.id - b.id).map((x) => ((wire(x) + 1) | (x.rule === "repeated" ? 0x10 : 0)).toString(16).padStart(2, "0")).join("");
+  const sponsorSrc = fs.readFileSync("../../../bot/sponsor.ts", "utf8");
+  const pinned = (k: string) => sponsorSrc.match(new RegExp(`export const ${k} = "(0x[0-9a-f]+)"`))?.[1];
+  const all = Object.values(f) as any[];
+  ok(pinned("PICKS_ARG_TYPES") === argTypes(all.filter((x) => x.id <= 5)), `bot/sponsor.ts PICKS_ARG_TYPES = the ABI's fields 1 to 5 (${argTypes(all.filter((x) => x.id <= 5))})`);
+  if (f.legs) ok(pinned("PICKS_ARG_TYPES_CARDS") === argTypes(all), `bot/sponsor.ts PICKS_ARG_TYPES_CARDS = the ABI's fields 1 to 6 (${argTypes(all)})`);
+  const picksGenerated = "../picks/assembly/proto/picks.ts";
+  // (The generated decoder exists only after building picks/, as for the race; CI checks the ABI, which is committed.)
+  if (fs.existsSync(picksGenerated)) ok(body("assembly/__tests__/picks_proto.ts") === body(picksGenerated), "the tests' copy of the Picks decoder is current");
+}
+const testCopy = "assembly/__tests__/race_proto.ts", generated = "../race/assembly/proto/race.ts";
+if (fs.existsSync(generated)) ok(body(testCopy) === body(generated), "the tests' copy of the race decoder is current");
+
+const s = Signer.fromSeed("sponsor-offline-check");
+const k = new Contract({ id: s.getAddress(), abi, provider: new Provider(["http://127.0.0.1:1"]), signer: s });
+const ser = new Serializer(abi.koilib_types);
+const { operation } = await (k.functions as any).set_config({ config: {
+  enabled: true, game: "1Mpmf2ERhjYpX7CCiM11WERuM4j17uT1sr", desk: "1FKTpXBhhHEbu5vVchM8UsVbAvPArJsRmR",
+  tokens: ["12Y5vW6gk8GceH53YfRkRre2Rrcsgw7Naq", "19GYjDBVXU7keLbYvMLazsGQn3GTWHjHkK"],
+  max_mana_per_tx: "200000000", max_mana_per_account_day: "1000000000", max_mana_per_account_week: "3000000000", max_mana_per_day: "20000000000",
+} }, { onlyOperation: true });
+const back: any = await ser.deserialize(operation.call_contract.args, abi.methods.set_config.argument);
+ok(back.config.game === "1Mpmf2ERhjYpX7CCiM11WERuM4j17uT1sr" && back.config.max_mana_per_account_week === "3000000000", "encode set_config");
+
+console.log(failures ? `\n${failures} check(s) FAILED — do not deploy.` : "\nAll offline checks passed.");
+process.exitCode = failures ? 1 : 0;

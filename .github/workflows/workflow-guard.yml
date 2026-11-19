@@ -1,0 +1,35 @@
+# Checks that the workflows stay pinned and that the hourly bot job is still intact, and runs the publish-job tests, so a
+# change to the workflows alone (no code change) still meets the same tests as the code that guards them (audit C1-4).
+name: Workflow guard
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - run: node --experimental-strip-types --test bot/workflow.test.ts
+      - run: npm ci --no-audit --no-fund --ignore-scripts
+      # The trigger, permission and secrets guard (issue triggers, write tokens, secrets), also for workflow-only changes
+      # (audit PN-9).
+      - run: node --test tests/audit/site.ci-deps.test.mjs
+      # Known bypass spellings must each fail a "(guard" rule, and the clean tree must pass (Repo Lens C5-18).
+      - run: node --test tests/audit/ci-guard-bypass.*.test.mjs
+      # The publish job's own tests (they run its shell and merge code against a scratch repository).
+      - run: node --import tsx --test --test-concurrency=1 tests/audit/*publish*.test.ts tests/audit/*publish*.test.mjs tests/audit/published-files.test.ts
+      # The VHP ruler's publish job: its embedded Python is vhp_ruler.py byte for byte, run against a scratch repository
+      # (Repo Lens #D-10 L-2).
+      - run: node --import tsx --test --test-concurrency=1 tests/audit/vhp-ruler.workflow.test.mjs
+      # Combo's publish step (combo.yml) and its tests (fix-check FC-20).
+      - run: node --import tsx --test --test-concurrency=1 tests/audit/combo-recorder.test.mjs tests/audit/repolens-combo-recorder.test.mjs tests/audit/combo-verify.test.mjs tests/audit/combo-ruler.test.mjs tests/audit/combo-lastweek.test.mjs tests/audit/repolens-g51-*.test.mjs tests/audit/combo-ruler-grace.test.mjs tests/audit/repolens-fc-combo/*.test.mjs

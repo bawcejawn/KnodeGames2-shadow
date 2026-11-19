@@ -1,0 +1,6 @@
+# Knode Games, https://knodegames.com
+User-agent: *
+Allow: /
+Disallow: /producer.html
+Disallow: /admin/
+Sitemap: https://knodegames.com/sitemap.xml

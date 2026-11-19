@@ -1,0 +1,29 @@
+{
+  "_": "sha256 of each contract's release build (build/release/contract.wasm). live = the code on chain now. source = what this folder builds today. They differ only while an upgrade is planned. tools/ci/contract-hashes.mjs fails if a build is not `source`.",
+  "vault": {
+    "address": "1Mpmf2ERhjYpX7CCiM11WERuM4j17uT1sr",
+    "live": "11043e1fde1d8d7dbac75e9e5e788d058a7116b0dab6149fc09ecdc7b1c4258b",
+    "source": "11043e1fde1d8d7dbac75e9e5e788d058a7116b0dab6149fc09ecdc7b1c4258b"
+  },
+  "desk": {
+    "address": "1FKTpXBhhHEbu5vVchM8UsVbAvPArJsRmR",
+    "live": "309506ccfaadd3427e937aa88cd34c9ea2a9e6088e49e51f014d546489dd5f35",
+    "source": "309506ccfaadd3427e937aa88cd34c9ea2a9e6088e49e51f014d546489dd5f35"
+  },
+  "picks": {
+    "address": "1LmgqBGctL9F2YkyjTXgieTXwnYHh8Y6Pm",
+    "live": "700c296a1064b904299c156061d6caf8fcabd0b1765968903f29d89d2426c594",
+    "source": "92d555d0680157854452e35162c1b1c5c100904996194b8c1c848df50e5e1c3d",
+    "note": "The source is Picks v2 (the Combo card type), not uploaded yet. Live v1 is old repo picks/ at c1c01733."
+  },
+  "race": {
+    "address": "1EN7xU8R9tQXjHvrX79qZvvvGkkKWVnB5K",
+    "live": "9993581baf822cd070331008441c5ad974f5c0b134520dfb7422b9efd1873864",
+    "source": "9993581baf822cd070331008441c5ad974f5c0b134520dfb7422b9efd1873864"
+  },
+  "sponsor": {
+    "address": "1ByDDSBUzy5zkRceELc54Jh8i41yNRoKt8",
+    "live": "b84e1add3ffa14a7d1933d5ce5a4ad33caa4bca887a489f87f710b3c121c83a6",
+    "source": "b84e1add3ffa14a7d1933d5ce5a4ad33caa4bca887a489f87f710b3c121c83a6"
+  }
+}

@@ -1,0 +1,48 @@
+// The Shared Game Kit's own tests (kit/tests/, design §F), run by npm run test:audit.
+import "../../kit/tests/payout.fuzz.test.ts";
+import "../../kit/tests/parts.test.mjs";
+import "../../kit/tests/parts.repolens-g61.test.mjs";
+import "../../kit/tests/parts.repolens-g61-fuzz.test.mjs";
+import "../../kit/tests/parts.repolens-g62.test.mjs";
+import "../../kit/tests/parts.repolens-g62-verify.test.mjs";
+import "../../kit/tests/parts.repolens-g63.test.mjs";
+import "../../kit/tests/sunday.property.test.ts";
+import "../../kit/tests/faults.test.ts";
+import "../../kit/tests/runtime.test.ts";
+import "../../kit/tests/publish-check.test.ts";
+import "../../kit/tests/tally.diff.test.ts";
+import "../../kit/tests/render.test.ts";
+import "../../kit/tests/conformance.test.ts";
+import "../../kit/tests/repolens-b11.test.ts";
+import "../../kit/tests/repolens-b12.test.ts";
+import "../../kit/tests/repolens-e24.test.ts";
+import "../../kit/tests/repolens-e25.test.ts";
+import "../../kit/tests/repolens-e26.test.ts";
+import "../../kit/tests/repolens-f2.test.ts";
+import "../../kit/tests/repolens-f2-more.test.ts";
+import "../../kit/tests/lows.test.ts";
+import "../../kit/tests/phase1.test.ts";
+import "../../kit/tests/phase1-fantasy.test.ts";
+import "../../kit/tests/phase1b-ruler.test.ts";
+import "../../kit/tests/phase1b-g3.test.ts";
+import "../../kit/tests/blockat.test.ts";
+import "../../kit/tests/g69-1.test.ts";
+import "../../kit/tests/g78-kit.test.mts";
+import "../../kit/tests/include-mode.test.ts";
+import "../../kit/tests/fallback.test.ts";
+import "../../kit/tests/live-week.test.ts";
+import "../../kit/tests/season.test.ts";
+import "../../kit/tests/first-week.test.ts";
+import "../../kit/tests/g82-3.test.ts";
+import "../../kit/tests/g79-1.test.ts";
+import "../../kit/tests/parts-kit.test.ts";
+import "./kit-repolens-g41.test.ts";
+
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+test("kit suite: every kit/tests/*.test.ts is imported here (none forgotten)", () => {
+  const here = fs.readFileSync(new URL(import.meta.url), "utf8");
+  const files = fs.readdirSync(new URL("../../kit/tests/", import.meta.url)).filter((f) => f.endsWith(".test.ts"));
+  for (const f of files) assert.ok(here.includes(`kit/tests/${f}"`), f);
+});

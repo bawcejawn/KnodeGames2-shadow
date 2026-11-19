@@ -1,0 +1,926 @@
+/* race.html: the Producer Race page. Read only: it reads blocks and VHP from the chain and the race recorder's public
+   files (race-data branch). It never signs or sends anything. The scoring is race-math.js, the same file the
+   recorder (bot/race.ts) uses.
+   - The live race is scored here from the chain, with the recorder's handicap cards. Until the recorder has published
+     a card, the page makes a provisional one from VHP right now and says so.
+   - Finished races show the recorder's final result; a race that has ended but is not final yet is scored here and
+     marked "checking". */
+(() => {
+  "use strict";
+  const M = window.KRaceMath;
+  if (!M || typeof document === "undefined" || !document.getElementById("track")) return;
+
+  const lib = window.koilib || window.koinos || window;
+  const RPC = "https://koinos.armana.io";
+  // Free read split (Capacity): each page load starts on Armana or koinosblocks at random; the other is the failover.
+  const RPCS = ["https://koinos.armana.io", "https://api.koinosblocks.com"];
+  if (Math.random() < 0.5) RPCS.reverse();
+  const DATA = "https://raw.githubusercontent.com/bawcejawn/KnodeGames/race-data/";
+  const VHP = "12Y5vW6gk8GceH53YfRkRre2Rrcsgw7Naq";
+  const EXPLORER = "https://koinosscan.com/address/";
+  const NAMES = { "1Mpmf2ERhjYpX7CCiM11WERuM4j17uT1sr": "Knode Games pool", "1FKTpXBhhHEbu5vVchM8UsVbAvPArJsRmR": "Knode Games Swap" };
+  const COLORS = ["#2F6B4F", "#F2B33D", "#B4432F", "#3E6FB0", "#8A4FB0", "#23845E", "#FF8A4C", "#5E6B63", "#C2547F", "#2D8C9E", "#9C7A2B", "#4B5BD6", "#7A9A3A", "#D9693F", "#6C4A3B", "#1F7A7A", "#A23B72", "#557C00", "#CC5500", "#456990"];
+  try { localStorage.removeItem("pr-guesses-v1"); } catch { /* the old rolling race's guesses are retired */ }
+
+  const provider = new lib.Provider(RPCS);
+  const types = { nested: { t: { nested: {
+    balance_of_arguments: { fields: { owner: { type: "bytes", id: 1, options: { "(koinos.btype)": "ADDRESS" } } } },
+    balance_of_result: { fields: { value: { type: "uint64", id: 1, options: { jstype: "JS_STRING" } } } },
+  } } } };
+  const vhpToken = new lib.Contract({ id: VHP, provider, abi: { methods: { balance_of: { entry_point: 0x5c721497, argument: "t.balance_of_arguments", return: "t.balance_of_result", read_only: true } }, koilib_types: types } });
+
+  const $ = (id) => document.getElementById(id);
+  const el = (tag, attrs = {}, ...kids) => { const e = document.createElement(tag); for (const [k, v] of Object.entries(attrs)) { if (k === "text") e.textContent = v; else if (k.startsWith("on")) e.addEventListener(k.slice(2), v); else e.setAttribute(k, v); } for (const c of kids) if (c != null) e.append(c); return e; };
+  const say = (t) => { $("status").textContent = t; };
+  // Nicknames (D-078): the shared names system shows "name · 1Abc12…wxyz" (pool name, Koinos @name or Knode Games name);
+  // the old built-in names and short address stay as the fallback if names.js didn't load.
+  const nameOf = (a) => (window.KNames ? window.KNames.of(a) : NAMES[a] || a.slice(0, 5) + "…" + a.slice(-4));
+  /** A pick scored a show (its horse finished 2nd or 3rd): the recorder's 6th field, or for races recorded before
+   *  Show existed, worked out from the race's stored standings with the same rule (race-math.js). */
+  const isShow = (result, p) => !p[3] && (p.length > 5 ? p[5] === 1 : !!result && Array.isArray(result.standings) && M.shows(result.standings).includes(p[1]));
+  const fmt = (n, d = 0) => Number(n).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
+  const clock = (t) => new Date(t).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  const dayTime = (t) => new Date(t).toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" });
+  const dur = (ms) => { const m = Math.max(0, Math.ceil(ms / 60000)); return m >= 60 ? `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")} min` : `${m} min`; };
+  const colorOf = new Map();
+  const colour = (a) => { if (!colorOf.has(a)) colorOf.set(a, COLORS[colorOf.size % COLORS.length]); return colorOf.get(a); };
+
+  let B = null, headT = 0, weeks = new Map(), prov = null, view = null, histMode = "today", lastTop = 0;
+  // Steps and blocks each horse had at the last refresh, to flash "+steps" on the horses that moved since.
+  let seen = { race: null, steps: new Map(), blocks: new Map() };
+
+  // ── data ──
+  async function fetchJson(url) { const r = await fetch(url, { cache: "no-cache" }); if (!r.ok) throw new Error(String(r.status)); return r.json(); }
+  async function loadWeeks(ws) {
+    for (const w of ws) {
+      try { const j = await fetchJson(`${DATA}W${String(w).padStart(3, "0")}.json`); if (j && j.v === 1 && j.week === w && Array.isArray(j.races)) weeks.set(w, j); }
+      catch { /* no file yet: the recorder hasn't run for that week */ }
+    }
+  }
+  const recorded = (id) => { for (const wf of weeks.values()) { const r = wf.races.find((x) => x.id === id); if (r) return r; } return null; };
+  /** A race as the page uses it: times, the recorder's cards (or the provisional card), and its result if final. */
+  function raceObj(index) {
+    const start = M.raceStart(index), id = M.raceId(index), rec = recorded(id);
+    const cards = rec && Array.isArray(rec.cards) && rec.cards.some(Boolean) ? rec.cards : null;
+    return { index, id, start, end: start + M.RACE, number: ((index % 4) + 4) % 4 + 1, cards: cards || (prov ? [prov, ...new Array(M.LEGS - 1).fill(null)] : null), provisional: !cards, result: rec && rec.result };
+  }
+  async function readVhp(addrs) {
+    const out = [], queue = addrs.slice();
+    const worker = async () => { while (queue.length) { const a = queue.shift(); for (let t = 0; ; t++) { try { const r = await vhpToken.functions.balance_of({ owner: a }); out.push([a, Number((r.result && r.result.value) || 0) / 1e8]); break; } catch (e) { if (t >= 2) throw e; await new Promise((r) => setTimeout(r, 800 * (t + 1))); } } } };
+    await Promise.all(Array.from({ length: 4 }, worker));
+    return out;
+  }
+  /** Until the recorder has a card for the race, one made here from VHP right now (same math, marked provisional). */
+  async function provisionalCard() {
+    if (prov && Date.now() - prov.madeHere < 600000) return;
+    const i0 = M.lowerBound(B.ts, headT - M.RACE), seen = new Set();
+    for (let i = i0; i < B.sig.length; i++) seen.add(B.signers[B.sig[i]]);
+    const span = headT - B.ts[i0], bpr = span > 0 ? (B.sig.length - 1 - i0) * M.RACE / span : 7200;
+    prov = { ...M.makeCard(await readVhp([...seen]), bpr, Date.now()), madeHere: Date.now() };
+  }
+
+  async function refresh(first = false) {
+    const r = await KBlocks.ensure(provider, { blocks: 31000, onStatus: first ? (t) => t && say(t) : null });
+    B = r.B; headT = B.ts[B.ts.length - 1];
+    const cur = M.raceAt(Date.now());
+    if (first || Date.now() - (refresh.dataAt || 0) > 300000) {
+      refresh.dataAt = Date.now();
+      await loadWeeks([...new Set([M.weekOf(Date.now() - M.DAY), M.weekOf(Date.now())])]);
+      if (typesLive()) await loadTypeWeeks([...new Set([M.weekOf(Date.now() - M.DAY), M.weekOf(Date.now())])]);
+    }
+    if (!raceObj(cur.index).cards || raceObj(cur.index).provisional) { if (first) say("Reading each producer's VHP…"); await provisionalCard(); }
+    render();
+    renderPicks();
+    say("");
+  }
+
+  // ── the race on the track ──
+  const POS = (f) => `calc(20px + (100% - 40px) * ${(Number.isFinite(f) ? Math.min(1, Math.max(0, f)) : 0).toFixed(4)})`;   // the animal's centre (and the Now line) on one shared scale
+  const ord = (n) => `${n}${n % 100 >= 11 && n % 100 <= 13 ? "th" : ["th", "st", "nd", "rd"][n % 10] || "th"}`;
+  /** Time marks along the top of the bar column: where the race will be after each step. */
+  function rulerEl(len, step) {
+    const out = [];
+    for (let t = step; t < len - 1; t += step) out.push(el("span", { class: "rt-tick", style: `left:${POS(t / len)}`, text: step >= 86400000 ? `${t / 86400000}d` : step >= 3600000 ? `${t / 3600000}h` : `${t / 60000}m` }));
+    out.push(el("span", { class: "rt-tick fin", style: `left:${POS(1)}`, text: "finish" }));
+    return el("div", { class: "rt-ruler" }, ...out);
+  }
+  const r6Fixed = new Map();   // race id -> the producers in a fixed order (Repo Lens #G-72 G72-4)
+  let r6Win = 0;   // 6-hour board: index into R6_WINDOWS; -1 = against the last race's final places (owner, 14 Nov)
+  // Owner 14 Nov: "space the horses out so it's easier to see who is ahead". Pack view (default) zooms each lane onto the
+  // pack, last place at the left and the leader at the right, like a TV camera following the race (owner, 14 Nov:
+  // no extra strip under the lane). "Whole race" is the old 0-to-finish scale with the hour marks.
+  let packView = true;
+  try { packView = localStorage.getItem("pr-view") !== "whole"; } catch { /* default */ }
+  // Owner 15 Nov: a couple of sort options. "Most VHP" (the fixed line-up, default), "Current place" (live order), "A–Z".
+  const SORTS = [["vhp", "Most VHP"], ["place", "Current place"], ["name", "A–Z"]];
+  let sortBy = "vhp";
+  try { const v = localStorage.getItem("pr-sort"); if (SORTS.some(([k]) => k === v)) sortBy = v; } catch { /* default */ }
+  const R6_WINDOWS = [3600000, 3 * 3600000];
+  function render() {
+    if (!B) return;                                     // the blocks aren't loaded yet (the picks panel can be first)
+    const cur = M.raceAt(Date.now());
+    const race = raceObj(view == null ? cur.index : view);
+    const live = race.index === cur.index, ended = Date.now() >= race.end;
+    const final = race.result && race.result.final && !race.result.missed;
+    // Steps: the recorder's final standings, or scored here from the blocks.
+    let st = null;
+    if (final && Array.isArray(race.result.standings)) st = race.result.standings.map((x) => ({ ...x }));
+    else if (race.cards && B && B.ts[0] <= race.start) st = M.standings(B, race, race.cards, Math.min(headT + 1, race.end));
+    const line = M.finishLine(race.cards || []) || (race.result && race.result.line) || 0;
+    const nLegs = M.legsOf(race.cards), legMs = M.RACE / nLegs;
+    const legNow = M.legOf(race.start, Math.min(Date.now(), race.end - 1), nLegs), card = race.cards ? M.cardForLeg(race.cards, legNow) : null;
+
+    // Title, tag and clock
+    // D-129: a Sunday race is a fun race: played and scored, counted on Today and All time, never on the week's board.
+    const fun = M.restRace(race.start);
+    $("race-title").textContent = `${fun ? "Sunday fun race" : "Race"} ${race.number} of 4 (${race.id.slice(11)}:00 UTC) · ${dayTime(race.start)} – ${clock(race.end)}${fun ? " · counts on All time, not the week" : ""}`;
+    const tag = $("race-tag");
+    tag.textContent = live ? "Live" : !ended ? "Upcoming" : final ? "Final" : race.result && race.result.missed ? "Not recorded" : "Checking";
+    tag.classList.toggle("done", !live);
+    const frac = Math.min(1, Math.max(0, (Date.now() - race.start) / M.RACE));
+    $("clock-fill").style.width = `${frac * 100}%`;
+    $("clock-fill").classList.toggle("done", frac >= 1 || !live);
+    $("clock").setAttribute("aria-valuenow", String(Math.round(frac * 100)));
+    $("clock-txt").textContent = live ? `${dur(race.end - Date.now())} left · finishes ${clock(race.end)}` : ended ? "Race over" : `Starts in ${dur(race.start - Date.now())}`;
+    // A dashed mark at every handicap update (every hour; every 2 hours for races recorded before hourly cards).
+    const marks = $("clock-marks");
+    if (marks.childElementCount !== nLegs - 1) marks.replaceChildren(...Array.from({ length: nLegs - 1 }, (_, l) => el("div", { class: "clock-leg", style: `left:${((l + 1) / nLegs) * 100}%` })));
+    const nextLeg = Date.now() < race.start ? race.start : race.start + (legNow + 1) * legMs;
+    $("leg1").textContent = `Start ${clock(race.start)}`;
+    $("leg2").textContent = `Handicap updates every ${nLegs === 6 ? "hour" : "2 hours"}`;
+    $("leg3").textContent = live && nextLeg < race.end ? `Next card ${clock(nextLeg)}` : `Finish ${clock(race.end)}`;
+
+    // Lanes
+    const track = $("track");
+    if (!st || !st.length) {
+      track.replaceChildren(el("p", { class: "note", text: race.result && race.result.missed ? "This race wasn't recorded." : !ended && !live ? "The horses are in the stalls. The race starts on time, from 0." : "Loading the race…" }));
+    } else {
+      // The live order, all the way to the finish: nobody waits at the line (see KRaceMath.track).
+      const rows = M.track(st, line, ended);
+      // Fixed order, biggest producer (most VHP) first, so the line-up never shuffles and the leader is not always on top.
+      const c0 = (race.cards && M.cardForLeg(race.cards, 0)) || card, vhpOf = new Map(c0 ? c0.field.map((x) => [x.a, x.vhp]) : []);
+      let fixed = r6Fixed.get(race.id);
+      if (!fixed) { fixed = [...rows].sort((p, q) => (vhpOf.get(q.a) || 0) - (vhpOf.get(p.a) || 0) || (p.a < q.a ? -1 : 1)).map((r) => r.a); if (c0) r6Fixed.set(race.id, fixed); }
+      const extra = rows.filter((r) => !fixed.includes(r.a)).map((r) => r.a).sort();
+      if (extra.length) { fixed = fixed.concat(extra); if (c0) r6Fixed.set(race.id, fixed); }
+      const at = new Map(fixed.map((a, k) => [a, k]));
+      const ordered = sortBy === "place" ? [...rows]   // rows are in live place order
+        : sortBy === "name" ? [...rows].sort((p, q) => nameOf(p.a).localeCompare(nameOf(q.a), undefined, { sensitivity: "base" }) || (p.a < q.a ? -1 : 1))
+        : [...rows].sort((p, q) => at.get(p.a) - at.get(q.a));
+      const RO6 = ended ? ruledFor(race, 0) : null;   // a ruler week: the ruler's places, not the steps, decide
+      const existing = new Map([...track.querySelectorAll(".pr-lane")].map((c) => [c.dataset.addr, c]));
+      // Who moved since the last refresh (only while watching the live race; a new race or view starts clean).
+      const fresh = seen.race !== race.id;
+      const gained = new Map();
+      if (live && !fresh) for (const r of rows) { const d = r.steps - (seen.steps.get(r.a) || 0); if (d > 1e-9) gained.set(r.a, { steps: d, blocks: r.blocks - (seen.blocks.get(r.a) || 0) }); }
+      seen = { race: race.id, steps: new Map(rows.map((r) => [r.a, r.steps])), blocks: new Map(rows.map((r) => [r.a, r.blocks])) };
+      const keep = [];
+      // Places gained / lost over the chosen window, and the Pick columns for the next 3 races (same look as the other race lengths).
+      const nowT = Date.now(), hasWin = live && !!race.cards;
+      let winBar = $("r6-win");
+      if (!winBar) { winBar = el("div", { id: "r6-win", class: "rt-win" }); track.parentNode.insertBefore(winBar, track); }
+      winBar.hidden = !hasWin;
+      let viewBar = $("r6-view");
+      if (!viewBar) { viewBar = el("div", { id: "r6-view", class: "rt-win pr-viewbar" }); track.parentNode.insertBefore(viewBar, track); }
+      viewBar.replaceChildren(el("span", { class: "rt-wl", text: "View:" }),
+        ...[["Pack", true, "Zoomed in on the pack: easier to see who is ahead"], ["Whole race", false, "From the start line to the 6-hour finish"]].map(([t, v, tip]) => el("button", { type: "button", title: tip, "aria-pressed": String(packView === v), onclick: () => { packView = v; try { localStorage.setItem("pr-view", v ? "pack" : "whole"); } catch { /* fine */ } render(); } }, t)));
+      let sortBar = $("r6-sort");
+      if (!sortBar) { sortBar = el("div", { id: "r6-sort", class: "rt-win pr-viewbar" }); track.parentNode.insertBefore(sortBar, track); }
+      sortBar.replaceChildren(el("span", { class: "rt-wl", text: "Sort:" }),
+        ...SORTS.map(([k, t]) => el("button", { type: "button", "aria-pressed": String(sortBy === k), onclick: () => { sortBy = k; try { localStorage.setItem("pr-sort", k); } catch { /* fine */ } render(); } }, t)));
+      const xs = rows.map((r) => r.x).filter(Number.isFinite), lo = Math.min(...xs), hi = Math.max(...xs);
+      const PACK = (x) => (hi - lo > 1e-9 ? 0.04 + 0.92 * ((x - lo) / (hi - lo)) : 0.5);   // last place ~left, leader ~right
+      if (hasWin) winBar.replaceChildren(el("span", { class: "rt-wl", text: "Places gained / lost over:" }),
+        ...R6_WINDOWS.map((ms, i) => el("button", { type: "button", "aria-pressed": String(r6Win === i), onclick: () => { r6Win = i; render(); } }, `${ms / 3600000} h`)),
+        el("button", { type: "button", "aria-pressed": String(r6Win === -1), onclick: () => { r6Win = -1; render(); } }, "Since last race"));
+      let before6 = null;
+      if (hasWin && r6Win === -1) {
+        // each producer's live place against where it finished the race before (the Ruler's places in a Ruler week)
+        const pr = raceObj(race.index - 1), ro = pr.result ? ruledFor(pr, 0) : null;
+        const pl = ro && !ro.pending && Array.isArray(ro.placings) && ro.placings.length ? ro.placings
+          : !ro && pr.result && pr.result.final && Array.isArray(pr.result.standings) && pr.result.standings.length ? pr.result.standings.map((x) => x && x.a) : null;
+        if (pl) before6 = new Map(pl.map((a, j) => [a, j + 1]));
+      } else if (hasWin && race.cards && B.ts[0] <= race.start) {
+        const t0 = Math.max(race.start + 1000, nowT - R6_WINDOWS[r6Win] || nowT);
+        if (t0 < nowT - 5000) { const old = M.standings(B, race, race.cards, t0); if (old && old.length) before6 = new Map(old.map((x, j) => [x.a, j + 1])); }
+      }
+      const latest6 = () => { const lr = raceObj(cur.index); return (lr.cards && M.cardForLeg(lr.cards, M.legOf(lr.start, nowT, M.legsOf(lr.cards)))) || prov; };
+      const ups = live && me() && raceContract ? [1, 2, 3].map((k) => { const ur = raceObj(cur.index + k); return { k, r: ur, c: (ur.cards && !ur.provisional && M.cardForLeg(ur.cards, 0)) || latest6() }; }) : [];
+      const grid6 = ups.length ? `grid-template-columns:minmax(0,230px) minmax(120px,1fr) 104px repeat(${ups.length},62px)` : "";
+      if (ups.length) keep.push(el("div", { class: "pr-headrow rt-head", style: grid6 }, el("div", { text: "Producer" }), packView ? el("div", { class: "pr-packlbl", text: "← further back · leading →" }) : rulerEl(M.RACE, 3600000), el("div", { class: "pr-gap", text: "Standing" }),
+        ...ups.map((u) => el("div", { class: "rt-pc" }, el("b", { text: clock(u.r.start) }), el("span", { text: `locks ${dur(u.r.start - nowT)}` })))));
+      ordered.forEach((r) => {
+        const i = rows.indexOf(r);   // i = the live place (0 = leading)
+        let lane = existing.get(r.a);
+        if (!lane) {
+          lane = el("div", { class: "pr-lane", "data-addr": r.a },
+            el("div", { class: "pr-who" }, el("span", { class: "pr-rank" }), el("span", { class: "pr-dot" }), el("a", { class: "pr-name", href: EXPLORER + r.a, target: "_blank", rel: "noopener noreferrer" }), el("span", { class: "pr-plus", "aria-hidden": "true" }), el("span", { class: "pr-meta" })),
+            el("div", { class: "pr-run" }, el("div", { class: "pr-trail" }), el("img", { class: "pr-horse", alt: "", "aria-hidden": "true", src: "media/animals/horse.png", width: "30", height: "30" })),
+            el("div", { class: "pr-gap" }));
+          lane.querySelector(".pr-dot").style.background = colour(r.a);
+          lane.querySelector(".pr-trail").style.background = colour(r.a);
+        }
+        const h = card && card.field.find((x) => x.a === r.a), share = card ? h ? h.vhp / card.field.concat(card.paddock).reduce((s, x) => s + x.vhp, 0) : 0 : 0;
+        const rp = ended && RO6 ? (RO6.pending ? -1 : RO6.placings.indexOf(r.a)) : i;   // G72-1: a ruler week: the Ruler's place, "–" until it is in
+        lane.querySelector(".pr-rank").textContent = rp >= 0 ? ord(rp + 1) : "–";
+        lane.querySelector(".pr-name").textContent = nameOf(r.a);
+        const plus = lane.querySelector(".pr-plus"), g = gained.get(r.a);
+        if (g) {
+          plus.textContent = `+${fmt(g.steps, 2)}${g.blocks > 1 ? ` (${g.blocks} blocks)` : ""}`;
+          plus.classList.remove("on"); lane.classList.remove("moved"); void plus.offsetWidth;   // restart the flash
+          plus.classList.add("on"); lane.classList.add("moved");
+        } else { plus.classList.remove("on"); lane.classList.remove("moved"); if (!live) plus.textContent = ""; }
+        lane.querySelector(".pr-meta").textContent = `${h ? `×${h.h.toFixed(2)} per block` : "no handicap this leg"} · ${fmt(r.blocks)} blocks${share ? ` · ${fmt(share * 100, share < 0.01 ? 2 : 1)}% VHP` : ""}`;
+        const xf = packView ? PACK(r.x) : r.x;
+        lane.querySelector(".pr-horse").style.left = `calc(${POS(xf)} - 20px)`;   // the animal always sits fully inside the bar; its middle is the progress point
+        lane.querySelector(".pr-trail").style.width = POS(xf);
+        const gap = lane.querySelector(".pr-gap");
+        const EL = ended ? endLabel(RO6, r.a, i) : null;
+        if (ended) gap.replaceChildren(EL.text ? el("b", { text: EL.text }) : `${fmt(r.behind, 1)} behind`, el("br"), el("span", { class: "ago", text: `${fmt(r.steps, 1)} steps` }));
+        else if (i === 0) gap.replaceChildren(el("b", { text: "Leading" }), el("br"), el("span", { class: "ago", text: `${fmt(r.steps, 1)} steps` }));
+        else gap.replaceChildren(`${fmt(r.behind, 1)} behind`, el("br"), el("span", { class: "ago", text: `${fmt(r.steps, 1)} steps` }));
+        // Time passed (shaded) and the Now line, on the same scale as the runners.
+        const run = lane.querySelector(".pr-run");
+        let shade = run.querySelector(".pr-shade");
+        if (!shade) { shade = el("div", { class: "pr-shade" }); run.insertBefore(shade, run.firstChild); run.appendChild(el("div", { class: "pr-nowline" })); }
+        shade.style.width = frac > 0 ? POS(frac) : "0"; run.querySelector(".pr-nowline").style.left = POS(frac); run.classList.toggle("over", !live); run.classList.toggle("pack", packView);
+        // Gained / lost pill
+        let pill = lane.querySelector(".rt-pill");
+        if (!pill) { pill = el("span", { class: "rt-pill" }); lane.querySelector(".pr-who").insertBefore(pill, lane.querySelector(".pr-meta")); }
+        const bp = before6 && before6.get(r.a), dd = bp ? bp - (i + 1) : null;
+        pill.hidden = dd == null || dd === 0; if (dd != null) { pill.className = `rt-pill ${dd > 0 ? "up" : dd < 0 ? "down" : ""}`; pill.textContent = dd > 0 ? `▲ ${dd}` : dd < 0 ? `▼ ${-dd}` : "–"; }
+        // Pick columns
+        lane.querySelectorAll(".rt-pk").forEach((n) => n.remove());
+        lane.style.cssText = grid6;
+        lane.classList.toggle("rt-lane", !!ups.length);
+        for (const u of ups) {
+          const mineP = myPicks.get(cur.index + u.k), dr = drafts.get(cur.index + u.k), chosen = (dr || mineP) === r.a, inField = !!(u.c && u.c.field.some((x) => x.a === r.a));
+          // phones show each button's race time on the button itself (the time header is hidden there)
+          const b = el("button", { type: "button", class: `rt-pk${chosen ? " on" : ""}`, "aria-pressed": String(chosen), "aria-label": `${chosen ? "Picked" : "Pick"} ${nameOf(r.a)} for the race at ${dayTime(u.r.start)}` }, el("span", { text: chosen ? (dr && dr !== mineP ? "Picked" : "Locked in") : "Pick" }), el("small", { class: "rt-pk-t", text: clock(u.r.start) }));
+          if (sending || !inField) b.disabled = true;
+          b.addEventListener("click", () => { if (batchOn()) { if (drafts.get(cur.index + u.k) === r.a) drafts.delete(cur.index + u.k); else drafts.set(cur.index + u.k, r.a); renderBar(); render(); return; } sendPick(cur.index + u.k, r.a); });
+          lane.appendChild(b);
+        }
+        lane.classList.toggle("lead", !ended && i === 0);
+        lane.classList.toggle("win", !!(EL && EL.win));
+        lane.classList.toggle("mine", myPicks.get(race.index) === r.a);
+        lane.setAttribute("aria-label", `${nameOf(r.a)}: ${ended ? (rp >= 0 ? `place ${rp + 1}` : "no place") : `running ${i + 1}`}, ${fmt(r.steps, 1)} steps`);
+        keep.push(lane);
+      });
+      track.replaceChildren(...keep);
+      if (live && B.top !== lastTop && lastTop) { const lane = existing.get(B.signers[B.sig[B.sig.length - 1]]); if (lane) { lane.classList.remove("pr-step"); void lane.offsetWidth; lane.classList.add("pr-step"); } }
+      lastTop = B.top;
+    }
+    const stretch = live && race.end - Date.now() <= 30 * 60000;
+    const lineNote = ended ? "" : `${stretch ? "Final stretch: the order shown is live. " : ""}The flag is the 6-hour finish; the order shown is the real live order, and the winner crosses the line when time runs out.`;
+    $("track-note").textContent = [
+      race.provisional && !ended ? "Provisional handicap: made in your browser from VHP right now, until the race recorder publishes the official card." : "",
+      lineNote, ended ? endNote(ruledFor(race, 0)) : "Steps behind are counted with the handicap.",
+    ].filter(Boolean).join(" ");
+
+    renderCard(race, card, legNow, nLegs);
+    renderFeed(race, card);
+    renderHistory();
+  }
+
+  function renderCard(race, card, leg, n) {
+    const legMs = M.RACE / n;
+    $("card-title").textContent = `Handicap card ${leg + 1} of ${n}`;
+    if (!card) { $("card-sub").textContent = "No card yet."; $("card-rows").replaceChildren(); $("paddock-box").hidden = true; return; }
+    const total = card.field.concat(card.paddock).reduce((s, x) => s + x.vhp, 0);
+    $("card-sub").textContent = `${race.provisional ? "Provisional, from VHP right now" : `Set at ${dayTime(card.at)}`}. Applies ${clock(race.start + leg * legMs)}–${clock(race.start + (leg + 1) * legMs)}. Luck trim c = ${card.c}.`;
+    $("card-rows").replaceChildren(...card.field.map((r) => el("tr", {},
+      el("td", {}, el("span", { class: "pr-dot", style: `background:${colour(r.a)};margin-right:6px` }), el("a", { class: "mono", href: EXPLORER + r.a, target: "_blank", rel: "noopener noreferrer", text: nameOf(r.a) })),
+      el("td", { class: "num", text: `${fmt((r.vhp / total) * 100, r.vhp / total < 0.01 ? 2 : 1)}%` }),
+      el("td", { class: "num", text: `×${r.h.toFixed(2)}` }))));
+    $("paddock").replaceChildren(...card.paddock.map((p) => el("li", {}, el("a", { class: "mono", href: EXPLORER + p.a, target: "_blank", rel: "noopener noreferrer", text: nameOf(p.a) }), ` · about ${fmt(p.k, 1)} blocks a race`)));
+    $("paddock-box").hidden = !card.paddock.length;
+  }
+
+  function renderFeed(race, card) {
+    const items = [];
+    for (let i = B.sig.length - 1; i >= 0 && items.length < 8; i--) {
+      const a = B.signers[B.sig[i]], live = B.ts[i] >= race.start && B.ts[i] < race.end;
+      const leg = M.legOf(race.start, B.ts[i], M.legsOf(race.cards)), c = live && race.cards ? M.cardForLeg(race.cards, leg) : card, h = c && c.field.find((x) => x.a === a);
+      items.push(el("li", {}, el("span", { class: "pr-dot", style: `background:${colour(a)}` }), `${nameOf(a)} `, el("b", { text: !live ? "between races" : h ? `+${h.h.toFixed(2)}` : "paddock" }),
+        el("span", { class: "ago", "data-t": String(B.ts[i]), text: ` · block ${fmt(B.from + i)} · ${Math.max(0, Math.round((Date.now() - B.ts[i]) / 1000))} s ago` })));
+    }
+    $("feed").replaceChildren(...items);
+  }
+
+  // ── results ──
+  function renderHistory() {
+    const now = Date.now(), cur = M.raceIndex(now);
+    let from, to;
+    if (histMode === "today") { const d0 = Math.floor(now / M.DAY) * M.DAY; from = M.raceIndex(d0); to = from + 3; }
+    else { const w0 = M.weekStart(M.weekOf(now)); from = M.raceIndex(w0); to = Math.min(from + 27, cur + 4); }
+    const rows = [];
+    for (let i = to; i >= from; i--) {
+      const r = raceObj(i), ended = now >= r.end, live = i === cur;
+      let status = live ? "live" : !ended ? "up" : r.result && r.result.missed ? "missed" : r.result && r.result.final ? "final" : "checking";
+      let st = null;
+      // Owner, 12 Nov / Repo Lens #G-28: one result per race. In a week the ruler is ON for, a finished race's winner is
+      // the ruler's 1st (and "Checking" until its card is in), never the handicap race's.
+      const RO = status === "final" ? ruledFor(r, 0) : null;
+      if (RO && RO.pending) status = "checking";
+      const ruled = !!RO && !RO.pending, rp = (x) => window.KRulerVoid.ruledPick(RO, x[1]);
+      if (ruled) st = RO.first ? [{ a: RO.first }] : [];
+      else if (status === "final") st = r.result.standings;
+      else if ((status === "checking" || live) && r.cards && !r.provisional && B && B.ts[0] <= r.start) st = M.standings(B, r, r.cards, Math.min(headT + 1, r.end));
+      else if (status === "checking" && r.provisional) status = "missed";
+      const w = st && st.length ? st[0] : null, margin = !ruled && st && st.length > 1 ? st[0].steps - st[1].steps : null;
+      rows.push(el("tr", { class: view === i || (view == null && live) ? "sel" : "" },
+        el("td", { text: dayTime(r.start) }),
+        el("td", {}, el("span", { class: `st ${status}`, text: { live: "Live", up: "Upcoming", missed: "Not recorded", final: "Final", checking: "Checking" }[status] })),
+        el("td", { class: "mono" }, w ? el("a", { href: EXPLORER + w.a, target: "_blank", rel: "noopener noreferrer", text: `${live ? "leading: " : ""}${nameOf(w.a)}` }) : "–"),
+        el("td", { class: "num hide-sm", text: w && !ruled ? fmt(w.steps, 1) : "–" }),
+        el("td", { class: "num hide-sm", text: margin != null ? fmt(margin, 1) : "–" }),
+        el("td", { class: "num hide-sm", text: status === "final" && Array.isArray(r.result.picks) ? (ruled ? `${r.result.picks.filter((x) => rp(x).win).length} · ${r.result.picks.filter((x) => rp(x).show).length} of ${r.result.picks.length}` : `${r.result.picks.filter((x) => x[3]).length} · ${r.result.picks.filter((x) => isShow(r.result, x)).length} of ${r.result.picks.length}`) : "–" }),
+        el("td", {}, (ended || live) && status !== "missed" ? el("button", { type: "button", onclick: () => { view = live ? null : i; render(); window.scrollTo({ top: 0, behavior: "smooth" }); } }, live ? "Watch" : "View") : null)));
+    }
+    $("hist-rows").replaceChildren(...rows);
+  }
+  // ── picks (once the race picks contract is live: race-data/deployment.json on the site) ──
+  const ROOT = new URL("./", location.href);
+  const W = window.KWallet;
+  let raceContract = null, myPicks = new Map(), usage = null, sending = false, board = null;
+  // The pick panel is redrawn only when something in it changed (the race redraws every few seconds), and a horse you
+  // chose but haven't sent yet is kept across redraws.
+  let picksKey = "";
+  const drafts = new Map();
+  const me = () => (W && W.address) || null;
+  async function setupPicks() {
+    let rdep = null, dep = null;
+    try { rdep = await fetchJson(new URL("race-data/deployment.json", ROOT)); } catch { return; }   // not live yet
+    if (!rdep || !KBlocks.isAddr(rdep.contract)) return;
+    try { dep = await fetchJson(new URL("game-data/deployment.json", ROOT)); } catch { /* the wallet keeps its defaults */ }
+    const abi = await fetchJson(new URL("contracts/race/abi/race.koilib.json", ROOT));
+    raceContract = new lib.Contract({ id: rdep.contract, abi, provider });
+    // The Mana sponsor pays for picks (free play): the wallet needs the same settings as the game page.
+    if (W) W.init({ provider, chainId: dep && dep.chainId, payer: dep && dep.payer, sponsor: dep && dep.sponsor, onChange: () => loadMine() });
+    $("picks-soon").hidden = true; $("picks").hidden = false;
+    loadMine();
+  }
+  /** My picks: the live race and the next 4 from the contract; finished ones from the recorded results. */
+  async function loadMine() {
+    if (!raceContract) return;
+    myPicks = new Map(); usage = null;
+    const who = me(), cur = M.raceIndex(Date.now());
+    if (who) {
+      try {
+        const reads = [0, 1, 2, 3, 4].map((k) => raceContract.functions.get_pick({ player: who, race: String(cur + k) }).then((r) => [cur + k, r.result && r.result.pick && r.result.pick.horse]));
+        for (const [i, h] of await Promise.all(reads)) if (h) myPicks.set(i, h);
+        usage = (await raceContract.functions.get_usage({ player: who })).result || null;
+      } catch { /* shown as "couldn't read" below */ }
+      for (const wf of weeks.values()) for (const r of wf.races) {
+        const p = r.result && Array.isArray(r.result.picks) && r.result.picks.find((x) => x[0] === who);
+        if (p) myPicks.set(M.parseRaceId(r.id), p[1]);
+      }
+    }
+    renderPicks(); render();
+  }
+  function renderPicks(force = false) {
+    if (!raceContract) return;
+    const who = me(), list = $("pk-list"), cur = M.raceIndex(Date.now());
+    // Leave the panel alone while a list is open or focused, or when nothing in it changed.
+    if (!force && list.contains(document.activeElement) && document.activeElement.tagName === "SELECT") return;
+    const fieldSig = [1, 2, 3, 4].map((k) => { const r = raceObj(cur + k), c = (r.cards && !r.provisional && M.cardForLeg(r.cards, 0)) || prov; return c ? `${c.at}:${c.field.length}` : "-"; }).join(",");
+    const key = JSON.stringify([who, W && W.kind, cur, sending, usage && usage.picks_today, usage && usage.max_picks_per_day, [...myPicks], fieldSig, [...weeks.keys()], (rulerFiles || []).map((f) => `${f.week}:${f._type}:${f.races.filter((e) => e && e.card).length}`).join()]);   // G28-1: redraw when a ruler result comes in
+    if (!force && key === picksKey && list.childElementCount) return;
+    picksKey = key;
+    if (!who) {
+      // Where the header's "Play free" lands (owner, 9 Nov): the free guest comes first, a wallet is the other choice.
+      $("picks-who").textContent = "Pick a horse for free as a guest: no sign-up, no wallet. Or connect Kondor or KOIN Vault.";
+      $("picks-left").textContent = "";
+      list.replaceChildren(el("button", { class: "btn btn-primary", type: "button", onclick: () => W && W.connect() }, "Play free or connect a wallet"));
+      return;
+    }
+    $("picks-who").textContent = `Picking as ${nameOf(who)}${W.kind === "guest" ? " (guest)" : ""}.`;
+    // D-166 (contract v2): a limit of 0 (left out of the chain's answer) = no per-game limit; the Mana sponsor's daily
+    // limit across the platform is the cap.
+    const max = usage ? Number(usage.max_picks_per_day ?? 0) : 5, used = usage ? Number(usage.picks_today) || 0 : 0;
+    $("picks-left").textContent = !usage ? "" : max > 0 ? `${Math.max(0, max - used)} of ${max} picks left today` : "No per-game pick limit";
+    const ln = $("pk-limit-note"); if (ln && usage) ln.textContent = max > 0 ? `Up to ${max} picks a day (changes count).` : "No per-game limit: the Mana sponsor's daily limit across Knode Games applies, or use your own Mana.";
+    const rows = [];
+    // D-129: Sunday UTC races are fun races: pick as usual; they count on Today and All time, not the week's board.
+    const funNote = (r) => (M.restRace(r.start) ? " · Sunday fun race: Today and All time, not the week" : "");
+    // The live race: locked.
+    const live = raceObj(cur), mineLive = myPicks.get(cur);
+    rows.push(el("div", { class: "pk-row live" },
+      el("div", { class: "pk-when" }, el("b", { text: `Live now (${live.id.slice(11)}:00 UTC)` }), el("span", { text: `ends ${clock(live.end)}${funNote(live)}` })),
+      el("div", { class: "pk-now", text: mineLive ? `Your pick: ${nameOf(mineLive)} 🔒` : "No pick for this race (locked)" }), el("span")));
+    // The next 4: open.
+    // The field for a race: its own starting card once the recorder has set it (about an hour before the start);
+    // until then the latest card there is (the live race's current one), or the provisional card made here.
+    const latest = () => { const lr = raceObj(cur); return (lr.cards && M.cardForLeg(lr.cards, M.legOf(lr.start, Date.now(), M.legsOf(lr.cards)))) || prov; };
+    const fieldOf = (r) => (r.cards && !r.provisional && M.cardForLeg(r.cards, 0)) || latest();
+    const label = (c, x) => { const tot = c.field.concat(c.paddock || []).reduce((t, y) => t + y.vhp, 0); const sh = tot ? (x.vhp / tot) * 100 : 0; return `${nameOf(x.a)} · ${fmt(sh, sh < 1 ? 2 : 1)}% VHP · ×${x.h.toFixed(2)} per block`; };
+    for (let k = 1; k <= 4; k++) {
+      const r = raceObj(cur + k), mine = myPicks.get(cur + k), c = fieldOf(r);
+      const opts = c ? c.field : [];
+      const sel = el("select", { "aria-label": `Horse for the race at ${dayTime(r.start)}` },
+        el("option", { value: "", text: !opts.length ? "Loading the horses…" : mine ? "Change to…" : "Choose a horse…" }),
+        ...opts.map((x) => { const o = el("option", { value: x.a, text: label(c, x) }); if (x.a === (drafts.get(cur + k) || mine)) o.selected = true; return o; }));
+      if (!opts.length) sel.disabled = true;
+      sel.addEventListener("change", () => { if (sel.value) drafts.set(cur + k, sel.value); else drafts.delete(cur + k); renderBar(); });
+      const btn = el("button", { class: "btn", type: "button", onclick: () => sendPick(cur + k, sel.value) }, mine ? "Change" : "Pick");
+      if (sending || (max > 0 && used >= max)) btn.disabled = true;
+      rows.push(el("div", { class: "pk-row" },
+        el("div", { class: "pk-when" }, el("b", { text: `${dayTime(r.start)}${M.restRace(r.start) ? " · Sunday fun race (Today and All time, not the week)" : ""}` }), el("span", { "data-lock": String(r.start), text: `${r.id.slice(11)}:00 UTC · locks in ${dur(r.start - Date.now())}` })),
+        el("div", {}, sel, mine ? el("div", { class: "pk-now ago", text: `Your pick: ${nameOf(mine)}` }) : null), btn));
+    }
+    // Finished races today with a pick: right or not.
+    const d0 = M.raceIndex(Math.floor(Date.now() / M.DAY) * M.DAY);
+    for (let i = cur - 1; i >= d0 - 4 && i >= 0; i--) {
+      const r = raceObj(i), p = r.result && Array.isArray(r.result.picks) ? r.result.picks.find((x) => x[0] === who) : null;
+      if (!p) continue;
+      const o = pickOutcome(r, 0, r.result, p);
+      rows.push(el("div", { class: "pk-row done" },
+        el("div", { class: "pk-when" }, el("b", { text: dayTime(r.start) }), el("span", { text: o.wait ? "checking" : "final" })),
+        el("div", { class: "pk-now", text: o.text }),
+        el("span", { class: o.wait ? "" : o.ok ? "pk-ok" : "pk-no", text: o.mark })));
+    }
+    list.replaceChildren(...rows);
+    renderBar();
+  }
+  // ── the pick pop-up: wallet → sent → confirmed on the chain ──
+  let modal = null;
+  function pickModal(state, title, lines = [], actions = []) {
+    if (!modal) {
+      modal = el("div", { class: "pk-modal", role: "dialog", "aria-modal": "true", "aria-labelledby": "pk-m-title" });
+      modal.addEventListener("click", (e) => { if (e.target === modal && state !== "busy") closeModal(); });
+      document.body.append(modal);
+    }
+    const icon = { busy: el("span", { class: "pk-spin", "aria-hidden": "true" }), ok: el("span", { class: "pk-big ok", text: "✓" }), bad: el("span", { class: "pk-big bad", text: "✗" }), info: el("span", { class: "pk-big", text: "ℹ" }) }[state];
+    modal.replaceChildren(el("div", { class: `pk-box ${state}` }, icon, el("h3", { id: "pk-m-title", text: title }), ...lines.map((l) => (typeof l === "string" ? el("p", { text: l }) : l)),
+      actions.length ? el("div", { class: "pk-acts" }, ...actions) : null));
+    modal.hidden = false;
+    const btn = modal.querySelector("button"); if (btn) btn.focus();
+  }
+  function closeModal() { if (modal) modal.hidden = true; }
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && modal && !modal.hidden && !modal.querySelector(".pk-spin")) closeModal(); });
+  const okBtn = (text = "Done") => el("button", { class: "btn", type: "button", onclick: closeModal }, text);
+
+  // "Send my picks" (Capacity ask 13 Nov): up to 10 chosen picks, any race length, in one transaction. Nothing shows until the wallet
+  // reports the sponsor's batch row (W.batchReady); a single pick still goes through sendPick exactly as before.
+  function batchOn() { return !!(W && typeof W.batchReady === "function" && W.batchReady()); }
+  const LOCK_MARGIN = 20000;   // a race that starts within 20 s is left out: it would lock before the chain sees the transaction
+  /** The picks chosen in the lists but not sent yet: still open, and different from the player's current pick. */
+  function pendingDrafts() {
+    const out = [];
+    for (const [index, horse] of drafts) {
+      const start = M.raceStart(index);
+      if (KBlocks.isAddr(horse) && horse !== myPicks.get(index) && start - Date.now() > LOCK_MARGIN) out.push({ type: 0, index, horse, start });
+    }
+    for (const [k, horse] of rtDrafts) {
+      const [type, index] = k.split(":").map(Number);
+      if (!(type >= 1 && type <= 4) || !Number.isInteger(index)) continue;
+      const start = M.typedStart(type, index);
+      if (KBlocks.isAddr(horse) && horse !== rtPicks.get(k) && start - Date.now() > LOCK_MARGIN) out.push({ type, index, horse, start });
+    }
+    return out.sort((a, b) => a.start - b.start);
+  }
+  function renderBar() {
+    const typedView = !!rtype && !!$("rt-card");
+    const sec = $("picks"); if (!sec && !typedView) return;
+    let bar = $("pk-bar");
+    const home = typedView ? $("rt-card") : $("pk-list");
+    if (bar && home && bar.parentNode !== (typedView ? home : home.parentNode)) bar.remove(), bar = null;
+    if (!bar) { if (!home) return; bar = el("div", { id: "pk-bar", class: "pk-bar", role: "status" }); if (typedView) home.appendChild(bar); else if (home.parentNode) home.parentNode.insertBefore(bar, home); else return; }
+    const n = pendingDrafts().length;
+    if (!batchOn() || !me() || !n) { bar.hidden = true; bar.replaceChildren(); return; }
+    bar.hidden = false;
+    bar.replaceChildren(el("span", { text: `${n} pick${n === 1 ? "" : "s"} chosen, ready to send together (up to 10 at a time, any race length).` }),
+      el("button", { class: "btn", type: "button", disabled: sending || undefined, onclick: sendDrafts }, `Send my ${Math.min(n, 10)} pick${Math.min(n, 10) === 1 ? "" : "s"}`));
+  }
+  async function sendDrafts() {
+    const who = me();
+    if (!who || !raceContract || sending || !batchOn()) return;
+    const list = pendingDrafts().slice(0, 10);
+    if (!list.length) { renderBar(); return pickModal("info", "Nothing to send", ["Those races have started, or the picks are already yours."], [okBtn("OK")]); }
+    const max = usage ? Number(usage.max_picks_per_day ?? 0) : 0, used = usage ? Number(usage.picks_today) || 0 : 0;
+    if (max > 0 && used + list.length > max) return pickModal("info", "Not enough picks left today", [`You have ${Math.max(0, max - used)} left today and ${list.length} waiting. Choose fewer, then send.`], [okBtn("OK")]);
+    sending = true; renderPicks(true); if (rtype) rtRender(true);
+    const wallet = W.kind === "guest" ? "your guest wallet" : W.label ? W.label() : "your wallet";
+    pickModal("busy", W.kind === "guest" ? "Sending your picks…" : `Confirm in ${wallet}`, [`${list.length} pick${list.length === 1 ? "" : "s"} in one go.`, "Free when the Knode Games Mana sponsor can pay; if it can't, your wallet asks to use your own Mana."]);
+    try {
+      const ops = [];
+      for (const d of list) { const { operation } = await raceContract.functions.pick({ player: who, race: M.contractRace(d.type, d.index), horse: d.horse }, { onlyOperation: true }); ops.push(Object.defineProperty(operation, "__start", { value: d.start, enumerable: false })); }
+      // Dropped right before signing: any race that started while the box was open.
+      const res = await W.sendBatch(`${list.length} race picks`, ops, { stillOpen: (o) => o.__start - Date.now() > LOCK_MARGIN });
+      for (const d of list) { if (d.type) rtDrafts.delete(`${d.type}:${d.index}`); else drafts.delete(d.index); }
+      pickModal("ok", "Picks sent", [`${res.sent} pick${res.sent === 1 ? "" : "s"} sent${res.dropped ? `; ${res.dropped} started while you were choosing, so they were left out` : ""}. This list updates by itself.`], [okBtn()]);
+    } catch (e) {
+      const m = String((e && e.message) || e);
+      const msg = /RACE: this race has started|locked/i.test(m) ? "Nothing was saved; a race had started. Try again."
+        : /RACE: today's picks are used up/i.test(m) ? "Today's picks are used up (changes count). More tomorrow, 00:00 UTC."
+        : /RACE: picks are closed/i.test(m) ? "Race picks are switched off right now."
+        : /reject|denied|cancel/i.test(m) ? "Cancelled in your wallet. Nothing was sent."
+        : `Not sent: ${m.slice(0, 200)}`;
+      pickModal(/Cancelled/.test(msg) ? "info" : "bad", /Cancelled/.test(msg) ? "Cancelled" : "Picks not sent", [msg], [okBtn("OK")]);
+    } finally { sending = false; await loadMine(); renderPicks(true); if (rtype) { await rtLoadMine(); rtRender(true); } renderBar(); }
+  }
+
+  async function sendPick(index, horse, type = 0) {
+    const who = me();
+    if (!who || !raceContract || sending) return;
+    // D-166: the contract v2 takes the race type in the race number from bit 48 (below 2^53, so exact in the browser: #D-13 H-1); type 0 is sent exactly as before v2.
+    const tr = M.typedRace(type, index), mineNow = type ? rtPicks.get(`${type}:${index}`) : myPicks.get(index);
+    const when = type ? `the ${M.TYPES[type].name.toLowerCase()} race at ${dayTime(tr.start)}` : `${dayTime(M.raceStart(index))} (${M.raceId(index).slice(11)}:00 UTC)`;
+    const args = { player: who, race: M.contractRace(type, index) };
+    if (!KBlocks.isAddr(horse)) return pickModal("info", "Choose a horse first", ["Pick a producer from the list, then press Pick."], [okBtn("OK")]);
+    if (mineNow === horse) return pickModal("info", "That is already your pick", [`${nameOf(horse)} for the race at ${when}.`], [okBtn("OK")]);
+    if (Date.now() >= tr.start) return pickModal("bad", "That race has started", ["Picks lock when a race starts."], [okBtn("OK")]);
+    sending = true; renderPicks(true);
+    const wallet = W.kind === "guest" ? "your guest wallet" : W.label ? W.label() : "your wallet";
+    pickModal("busy", W.kind === "guest" ? "Sending your pick…" : `Confirm in ${wallet}`, [`${nameOf(horse)} for the race at ${when}.`, W.kind === "guest" ? "Free: the Knode Games Mana sponsor pays." : "Free: the Knode Games Mana sponsor pays the Mana. Approve it in your wallet."]);
+    try {
+      const { operation } = await raceContract.functions.pick({ ...args, horse }, { onlyOperation: true });
+      const id = await W.send(`pick ${nameOf(horse)} for the race at ${dayTime(tr.start)}`, [operation]);
+      pickModal("busy", "Sent. Checking the chain…", [`${nameOf(horse)} for the race at ${when}.`]);
+      // Read the pick back from the race contract: confirmed only when the chain has it.
+      let onChain = false;
+      for (let t = 0; t < 10 && !onChain; t++) {
+        try { const r = await raceContract.functions.get_pick(args); onChain = !!(r.result && r.result.pick && r.result.pick.horse === horse); } catch { /* try again */ }
+        if (!onChain) await new Promise((res) => setTimeout(res, 3000));
+      }
+      if (type) rtDrafts.delete(`${type}:${index}`); else drafts.delete(index);
+      if (onChain) {
+        pickModal("ok", "Pick confirmed", [
+          el("p", {}, "Your horse: ", el("b", { text: nameOf(horse) })),
+          `Race: ${when}. It locks when the race starts; until then you can change it${usage && Number(usage.max_picks_per_day ?? 0) > 0 ? ` (changes count toward today's ${usage.max_picks_per_day})` : ""}.`,
+          id ? el("p", { class: "ago mono", text: `Transaction ${String(id).slice(0, 18)}…` }) : null,
+          el("p", { class: "ago" }, el("a", { href: EXPLORER + who, target: "_blank", rel: "noopener noreferrer", text: "See your wallet on Koinosscan" })),
+        ].filter(Boolean), [okBtn()]);
+      } else {
+        pickModal("info", "Sent, not seen on the chain yet", ["Your wallet sent it. It usually shows within a minute; this panel updates by itself.", id ? `Transaction ${String(id).slice(0, 18)}…` : ""].filter(Boolean), [okBtn("OK")]);
+      }
+    } catch (e) {
+      const m = String((e && e.message) || e);
+      // R-RACE-7 (I-082), as PR #66 did for Block X: only the Race picks contract's own messages (contracts/race/assembly/Race.ts)
+      // get the game's wording. The Mana sponsor and the wallet use some of the same words ("used up", "closed"), and
+      // their reason is shown as they give it.
+      const why = /RACE: this race has started; picks are locked/i.test(m) ? "That race has started: picks are locked."
+        : /RACE: picks open 24 hours before a race/i.test(m) ? "That race isn't open yet: picks open 24 hours before it starts."
+        : /RACE: unknown race type/i.test(m) ? "The race contract doesn't take this race type yet (its upgrade isn't live)."
+        : /RACE: today's picks are used up/i.test(m) ? "Today's picks are used up (changes count). More tomorrow, 00:00 UTC."
+        : /RACE: that is already your pick/i.test(m) ? "That is already your pick."
+        : /RACE: picks are closed/i.test(m) ? "Race picks are switched off right now."
+        : /pending account resources|insufficient.*(rc|mana|resources)/i.test(m) ? "Your Mana is still held by your last pick. It frees up within a few minutes of each pick; try again in a minute."
+        : /reject|denied|cancel/i.test(m) ? "Cancelled in your wallet. Nothing was sent."
+        : `Not sent: ${m.slice(0, 200)}`;
+      // D-166: the daily and weekly races open when the day or week before them starts.
+      const shown = type >= 3 && /isn't open yet/.test(why) ? `That race isn't open yet: picks open when the ${type === 3 ? "day" : "week"} before it starts.` : why;
+      pickModal(/Cancelled/.test(shown) ? "info" : "bad", /Cancelled/.test(shown) ? "Cancelled" : "Pick not sent", [shown], [okBtn("OK")]);
+    } finally { sending = false; await loadMine(); renderPicks(true); if (type) { await rtLoadMine(); rtRender(true); } }
+  }
+
+  // ── leaderboard (the recorder's board.json, shown by the shared Knode Games board in board.js) ──
+  const lb = window.KBoard ? window.KBoard.create($("race-board"), {
+    label: "Race leaderboard",
+    // Medals only for wallets that earn (owner, 2026-10-29), as the recorder works them out by the vault's rules:
+    // earns 1 / 2 = the free prize's 1st / 2nd (up to 10 per place, by score time then address: D-152, D-159), 3 = a share of the staked bucket.
+    freeWinners: (part, free, weekly) => new Map(weekly ? free.filter((r) => r.earns === 1 || r.earns === 2).map((r) => [r.a, r.earns]) : []),
+    earned: (r, weekly) => weekly && r.earns === 3,
+    columns: [{ key: "pts", label: "Points" }, { key: "correct", label: "Wins" }, { key: "shows", label: "Shows" }, { key: "picks", label: "Picks", wide: true }],
+    scored: (r) => (r.pts ?? r.correct) > 0,
+    summary: (r) => `${fmt(r.pts ?? 0)} pts · ${fmt(r.correct)} W ${fmt(r.shows ?? 0)} S`,
+    name: nameOf, link: (a) => EXPLORER + a,
+    me: (r, place) => `${place ? `You: #${place} with` : "Your score (only you see this):"} ${fmt(r.pts ?? 0)} points (${fmt(r.correct)} wins, ${fmt(r.shows ?? 0)} shows) from ${fmt(r.picks)} picks.`,
+    unranked: "To play on the Staked board, stake at least 1 VHP in the Producer Race.",
+    free: { show: 6, prize: "1st and 2nd at the end of the week win 2 and 1 VHP, from Week 1 (the week of Mon 16 Nov). Weeks before that are practice: no prizes." },
+  }) : null;
+  async function loadBoard() {
+    try { const b = await fetchJson(DATA + "board.json"); if (b && b.v === 1 && lb) { board = b; $("board-box").hidden = false; renderBoard(); } } catch { /* none yet */ }
+  }
+  function renderBoard() { if (lb && board) { lb.setMe(me() || ""); lb.set(board); } }
+  // ── the VHP ruler (owner, 11 Nov 2026): R<week>.json, the ruler's cards for the 6-hour race ──
+  // Shown only when the ruler is in shadow or on for this week: "from Monday …" (the switch's week), and each race's
+  // ruler 1st / 2nd / 3rd (marked "shadow: counts for nothing" in the shadow week).
+  // Repo Lens #G-28 G28-1: the loaded ruler files by week and type, so the pick rows show what the board pays: in a week
+  // the ruler is ON for, the ruler's 1st / 2nd / 3rd (ruler-void.js ruledOutcome), not the handicap race's.
+  // Repo Lens #G-72 G72-2: the Race ruler's first ON week (RACE_RULER_FROM_WEEK = 4, vault week 4 = Mon 16 Nov 2026;
+  // R003.json rulerFrom 4). Used only when no loaded R file says it. Change it only if the owner moves the switch.
+  const RULER_FROM_FALLBACK = 4;
+  var rulerFiles = [], rulerHidesHistory = false, rulerReady = false, rulerFailed = new Set();   // var: read by renderPicks / rtSelect whenever they run
+  /** Owner, 12 Nov ("one result per race") / Repo Lens #G-28: on a finished race's lane board, in a week the ruler
+   *  decides, "Winner" is the ruler's 1st, never the steps leader. Returns the label for the lane in place i (0 = most
+   *  steps) and whether it is the winner's lane; ro = ruledFor(race, type) (null = not a ruler week). */
+  function endLabel(ro, a, i) {
+    if (!ro) return { text: i === 0 ? "Winner" : null, win: i === 0 };
+    if (ro.pending) return { text: i === 0 ? "Most steps" : null, win: false };
+    return a === ro.first ? { text: "Winner (Ruler)", win: true } : { text: i === 0 ? "Most steps" : null, win: false };
+  }
+  function endNote(ro) {
+    if (!ro) return "";
+    if (ro.pending) return "Finished. The Ruler decides this race: its 1st, 2nd and 3rd come in about 1 to 2 hours after the end (Checking).";
+    if (!ro.first) return "Every producer was void, so no pick in this race scores (Ruler).";
+    return `Result (Ruler): 1st ${nameOf(ro.first)}${ro.placings[1] ? `, 2nd ${nameOf(ro.placings[1])}` : ""}${ro.placings[2] ? `, 3rd ${nameOf(ro.placings[2])}` : ""}. The lanes show the steps; the Ruler's places decide the points.`;
+  }
+  function ruledFor(r, type) {
+    const KV = window.KRulerVoid;
+    if (!KV || !KV.ruledOutcome || !r) return null;
+    // Repo Lens #G-45 G45-1: never the handicap result for a week the ruler may score. Before the ruler's files have
+    // loaded, when the week's file failed to load, or when a loaded file says the ruler is on from this week but this
+    // week's file isn't in yet: "Checking".
+    if (!rulerReady) return { pending: true };
+    const w = M.weekOf(r.start), j = rulerFiles.find((f) => f.week === w && f._type === type);
+    if (j) return KV.ruledOutcome(j.races.find((e) => e && e.id === r.id), j);
+    // Repo Lens #G-72 G72-2 (owner, 14 Nov: include the fallback): when no R file says when the ruler starts (both
+    // 404), use RULER_FROM_FALLBACK, the week RACE_RULER_FROM_WEEK was set to (switch variables are never unset), so an
+    // ON-week race says "Checking", never the steps leader as "Winner".
+    const from = rulerFiles.map((f) => f.rulerFrom).find(Number.isInteger) ?? RULER_FROM_FALLBACK;
+    return rulerFailed.has(w) || (Number.isInteger(from) && w >= from) ? { pending: true } : null;
+  }
+  // One finished pick row's result, the same way for the 6-hour race and the types.
+  function pickOutcome(r, type, res, p) {
+    const RO = ruledFor(r, type);
+    if (RO && RO.pending) return { wait: true, text: "Waiting for the Ruler's 1st, 2nd and 3rd (usually 1 to 2 hours).", mark: "…", ok: false };
+    const won = RO ? (RO.first ? `${nameOf(RO.first)} won (Ruler)` : "Every producer was void: no pick scores") : `${nameOf(res.winner || "")} won`;
+    if (!p) return { text: won, mark: "", ok: false };
+    const o = RO ? window.KRulerVoid.ruledPick(RO, p[1]) : { win: !!p[3], show: !p[3] && isShow(res, p) };
+    const s = M.pagePick(type, r.start, RO ? RO.standings : res.standings, p[1], o.win, o.show);
+    return { text: `${won}; you picked ${nameOf(p[1])}`, mark: s.label ? `✓ ${s.label} +${s.pts}` : "✗", ok: o.win || o.show };
+  }
+  async function loadRuler() {
+    const w = M.weekOf(Date.now()), files = [];
+    // The race types (option A): their ruler files too, once the types are live (R<week>-<type>.json).
+    const names = (x) => [`R${String(x).padStart(3, "0")}.json`].concat(typesLive() ? [1, 2, 3, 4].map((t) => `R${String(x).padStart(3, "0")}-${t}.json`) : []);
+    const failed = new Set();
+    for (const x of [w - 1, w]) for (const n of names(x)) { try { const j = await fetchJson(`${DATA}${n}`); if (j && j.v === 1 && j.week === x && Array.isArray(j.races)) files.push(Object.assign(j, { _type: /-([1-4])\.json$/.test(n) ? Number(n.slice(-6, -5)) : 0 })); } catch (e) { if (String(e && e.message) !== "404") failed.add(x); /* 404: none yet */ } }
+    rulerFiles = files; rulerFailed = failed; rulerReady = true;
+    if ($("ruler-types")) $("ruler-types").hidden = !typesLive();
+    const cur = files.find((j) => j.week === w) || files[files.length - 1];
+    if (!cur || cur.mode === "off" || !Number.isInteger(cur.rulerFrom)) { $("ruler-box").hidden = true; return; }
+    $("ruler-box").hidden = false;
+    const mon = new Date(M.weekStart(cur.rulerFrom)).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" });
+    $("ruler-when").textContent = cur.mode === "on"
+      ? `The 6-hour race is scored by the VHP Ruler from ${mon} (00:00 UTC). The horses are a live estimate; the final 1st, 2nd and 3rd come from the Ruler once the race's blocks are in (usually 1 to 2 hours).`
+      : `The 6-hour race switches to the VHP Ruler on ${mon} (00:00 UTC). Until then the Ruler runs beside the race as a trial: its results count for nothing.`;
+    // One compact table: the race, then its 1st, 2nd and 3rd; "Void" names how many producers did not count.
+    const V = window.KRulerVoid, body = [];
+    for (const j of files.slice().sort((a, b) => b.week - a.week)) for (const e of j.races.slice().reverse()) {
+      if (body.length >= 6) break;
+      const r = (weeks.get(j.week)?.races || []).find((x) => x.id === e.id) || ((p) => (p && p.type ? { start: M.typedStart(p.type, p.index) } : null))(M.parseTypedId(e.id)), v = V ? V.rulerVoids(e, j) : { has: false, voids: [], wholeVoid: false };
+      const place = (i) => el("td", {}, e.card && e.placings && e.placings[i] ? nameOf(e.placings[i]) : "–");
+      const note = !e.card ? el("td", { colspan: "3", class: "muted", text: "Result comes in once the race's blocks are in." })
+        : v.wholeVoid ? el("td", { colspan: "3" }, "Every producer was void: no pick scores.") : null;
+      const voided = v.has && v.voids.length && !v.wholeVoid ? el("span", { class: "void-chip", title: "Void: its VHP moved too much during this race, so it didn't count", text: `${v.voids.length} void` }) : null;
+      const when = el("td", { class: "rl-when" }, el("b", { text: r ? dayTime(r.start) : e.id }), el("span", { text: j.shadow ? "trial" : e.card ? "final" : "checking" }), voided);
+      body.push(el("tr", {}, when, ...(note ? [note] : [place(0), place(1), place(2)])));
+    }
+    const table = el("table", { class: "rl" }, el("thead", {}, el("tr", {}, el("th", { text: "Race (your time)" }), el("th", { text: "1st" }), el("th", { text: "2nd" }), el("th", { text: "3rd" }))), el("tbody", {}, ...body));
+    const trial = cur.mode !== "on";
+    $("ruler-list").replaceChildren(!body.length ? el("p", { class: "note", text: "No Ruler results yet." }) : trial ? el("details", { class: "rl-trial" }, el("summary", { text: "Trial results (count for nothing)" }), table) : table);
+    // Once the Ruler scores the race, its table is the results: the older Results table below would repeat them.
+    const hist = document.getElementById("history");
+    rulerHidesHistory = cur.mode === "on" && body.length > 0;
+    if (hist) hist.hidden = cur.mode === "on" && body.length > 0 || rtype !== 0;   // G28-2: and stays hidden on the 6-hour tab (rtSelect)
+    renderPicks(); renderHistory(); if (rtype) rtRender();   // G28-1: the pick rows and the Results table now know the ruler's results
+  }
+  if (W && W.subscribe) W.subscribe(() => { loadMine(); renderBoard(); });
+  // When the names list arrives or changes, redraw everything that shows a producer or player: the horses, card,
+  // feed and results (render), the pick lists and the leaderboard.
+  if (window.KNames && window.KNames.onChange) window.KNames.onChange(() => { render(); renderPicks(true); renderBoard(); });
+
+  const setMode = (m) => { histMode = m; $("h-today").setAttribute("aria-pressed", String(m === "today")); $("h-week").setAttribute("aria-pressed", String(m === "week")); renderHistory(); };
+  $("h-today").onclick = () => setMode("today");
+  $("h-week").onclick = () => setMode("week");
+
+  // ── race types (D-166): the toggle and the 1-hour, 2-hour, daily and weekly races ──
+  // Shown only from M.TYPES_FROM_WEEK (the week the Race contract v2 is live). The 6-hour race above is unchanged.
+  const typesLive = () => M.TYPES_ON_WEEK !== null && M.weekOf(Date.now()) >= M.TYPES_ON_WEEK;   // #C-12 C12-1: needs TYPES_READY
+  // D-173: points per place come WITH the types (never before): the rules note is reworded then.
+  if (typesLive() && $("pts-note")) $("pts-note").textContent = "Points are per place, by race: 1st / 2nd / 3rd score 3 / 2 / 1 in a 1-hour or 2-hour race, 4 / 2 / 1 in a 6-hour race, 6 / 3 / 2 in a daily race and 12 / 6 / 4 in the weekly race. A 2nd or 3rd place scores only if that producer signed at least one block.";
+  const ORDER = [1, 2, 0, 3, 4];
+  const POOL = "1Mpmf2ERhjYpX7CCiM11WERuM4j17uT1sr";
+  let rtype = 0, tweeks = new Map(), rtPicks = new Map(), rtKey = "";
+  const rtDrafts = new Map(), tuned = new Map();
+  try { const v = Number(localStorage.getItem("pr-type")); if ([0, 1, 2, 3, 4].includes(v)) rtype = v; } catch { /* per-viewer convenience only */ }
+  async function loadTypeWeeks(ws) {
+    for (const w of ws) {
+      try { const j = await fetchJson(`${DATA}T${String(w).padStart(3, "0")}.json`); if (j && j.v === 1 && j.week === w && Array.isArray(j.races) && Array.isArray(j.hours)) tweeks.set(w, j); }
+      catch { /* no file yet */ }
+    }
+  }
+  const ledgerHour = (h) => { const tf = tweeks.get(M.weekOf(h)); return tf ? tf.hours.find((x) => x.t === h) || null : null; };
+  const typedRec = (type, id) => { for (const tf of tweeks.values()) { const r = tf.races.find((x) => x.type === type && x.id === id); if (r) return r; } return null; };
+  /** The 6-hour card in force in the hour at h (the recorder's), or the provisional one made here. */
+  const baseAt = (h) => { const r = recorded(M.raceAt(h).id); return (r && M.cardForLeg(r.cards, M.legOf(r.start, h, M.legsOf(r.cards)))) || prov; };
+  /** A type's card for the hour at h: with the recorder's stored c once the hour is in its ledger, else tuned here. */
+  function cardAt(type, h) {
+    const base = baseAt(h); if (!base) return null;
+    const led = ledgerHour(h);
+    if (led) return M.typeCard(base, type, led.c[type - 1]);
+    const k = `${type}:${h}:${base.at}`;
+    if (!tuned.has(k)) tuned.set(k, M.typeCard(base, type));
+    return tuned.get(k);
+  }
+  /** Live standings: the ledger's counts for finished hours, the page's blocks for the rest. */
+  function liveStandings(race, asOf = Date.now()) {
+    const hours = new Map(), until = Math.min(asOf, race.end);
+    for (let h = race.start; h < until; h += M.HOUR) {
+      const led = ledgerHour(h);
+      if (led) { hours.set(h, led); continue; }
+      if (!B || B.ts[0] > h) return null;                    // older than the blocks the page holds, and no ledger yet
+      const n = {}, l = {};
+      for (let i = M.lowerBound(B.ts, h); i < B.ts.length && B.ts[i] < Math.min(h + M.HOUR, until); i++) { const a = B.signers[B.sig[i]]; n[a] = (n[a] || 0) + 1; l[a] = B.ts[i]; }
+      hours.set(h, { n, l });
+    }
+    const part = { ...race, end: Math.max(race.start + M.HOUR, Math.ceil(until / M.HOUR) * M.HOUR) };
+    return M.ledgerStandings(hours, part, (h) => cardAt(race.type, h));
+  }
+
+  // ── The animal board for the 1-hour, 2-hour, daily and weekly races (owner-approved design, 14 Nov) ──
+  const ANIMAL = { 0: "bird", 1: "rabbit", 2: "horse", 3: "snake", 4: "turtle" };
+  const HOURMS = 3600000, DAYMS = 86400000;
+  /** "Places gained / lost" windows, growing with the race length. */
+  const WINDOWS = { 1: [15 * 60000, 30 * 60000], 2: [30 * 60000, HOURMS], 3: [6 * HOURMS, 12 * HOURMS], 4: [DAYMS, 3 * DAYMS] };
+  const winLabel = (ms) => ms >= DAYMS ? `${ms / DAYMS} day${ms / DAYMS === 1 ? "" : "s"}` : ms >= HOURMS ? `${ms / HOURMS} h` : `${ms / 60000} min`;
+  let rtWin = 0;   // index into the type's windows; -1 = since the start
+  const rtFixed = new Map();   // type:index -> the producers in a fixed order (the order never changes during a race)
+  function rtBoard(cur, card, st) {
+    const T = M.TYPES[rtype], now = Date.now(), who = me();
+    const ended = now >= cur.end;
+    const ROt = ended ? ruledFor(cur, rtype) : null;   // a ruler week: the ruler's places, not the steps, decide
+    const fkey = `${rtype}:${cur.index}`;
+    let order = rtFixed.get(fkey);
+    if (order && (st || []).some((x) => !order.includes(x.a))) { order = order.concat([...new Set((st || []).map((x) => x.a))].filter((a) => !order.includes(a)).sort()); rtFixed.set(fkey, order); }   // G72-3
+    if (!order) { const vv = new Map((card ? card.field : []).map((x) => [x.a, x.vhp]));
+      order = [...new Set([...(card ? card.field.map((x) => x.a) : []), ...(st || []).map((x) => x.a)])].sort((p, q) => (vv.get(q) || 0) - (vv.get(p) || 0) || (p < q ? -1 : 1));   // biggest producer first, fixed for the race
+      if (card) rtFixed.set(fkey, order); }
+    const by = new Map((st || []).map((x) => [x.a, x]));
+    const hm = new Map((card ? card.field : []).map((x) => [x.a, x.h]));
+    const total = card ? card.field.concat(card.paddock || []).reduce((s, x) => s + x.vhp, 0) : 0;
+    const vhp = new Map((card ? card.field : []).map((x) => [x.a, x.vhp]));
+    const rows = M.track(st || [], card ? (M.ledgerLine(cur, (h) => cardAt(rtype, h)) || 0) : 0, ended);
+    const trk = new Map(rows.map((r) => [r.a, r]));
+    const rank = new Map((st || []).map((x, i) => [x.a, i + 1]));
+    // Time bar: how much of the race has passed.
+    const frac = Math.min(1, Math.max(0, (now - cur.start) / (cur.end - cur.start)));
+    const tm = $("rt-time");
+    tm.replaceChildren(el("div", { class: "rt-tfill", style: `width:${frac * 100}%` }), el("span", { class: "rt-tl", text: ended && ROt ? endNote(ROt) : `${fmt(frac * 100, 0)}% of the ${T.name.toLowerCase()} race gone · ${dur(Math.max(0, cur.end - now))} left` }));
+    // Places gained or lost over the chosen window.
+    const wins = WINDOWS[rtype] || [];
+    const wsel = $("rt-win");
+    wsel.replaceChildren(el("span", { class: "rt-wl", text: "Places gained / lost over:" }),
+      ...wins.map((ms, i) => el("button", { type: "button", "aria-pressed": String(rtWin === i), onclick: () => { rtWin = i; rtRender(true); } }, winLabel(ms))),
+      el("button", { type: "button", "aria-pressed": String(rtWin === -1), onclick: () => { rtWin = -1; rtRender(true); } }, "Since start"));
+    const wms = rtWin === -1 ? null : wins[rtWin] || wins[0];
+    let before = null;
+    if (st && st.length) {
+      const t0 = wms == null ? cur.start + 1000 : Math.max(cur.start + 1000, now - wms);
+      if (t0 < now - 5000) { const old = liveStandings(cur, t0); if (old && old.length) before = new Map(old.map((x, i) => [x.a, i + 1])); }
+    }
+    const upc = upcoming(rtype).slice(0, 3);
+    const grid = `grid-template-columns:minmax(0,230px) minmax(120px,1fr) 104px repeat(${upc.length},62px)`;
+    const head = el("div", { class: "pr-lane rt-lane rt-head", style: grid }, el("div", { text: "Producer" }), rulerEl(cur.end - cur.start, { 1: 15 * 60000, 2: 30 * 60000, 3: 6 * HOURMS, 4: DAYMS }[rtype] || HOURMS), el("div", { class: "pr-gap", text: "Standing" }),
+      ...upc.map((r) => el("div", { class: "rt-pc", title: `Race starting ${dayTime(r.start)}` }, el("b", { text: rtype >= 3 ? dayTime(r.start).replace(/ UTC$/, "") : clock(r.start) }), el("span", { text: `locks ${dur(r.start - now)}` }))));
+    const lanes = order.map((a) => {
+      const r = trk.get(a), x = r ? r.x * 100 : 0, h = hm.get(a), sh = vhp.get(a) && total ? vhp.get(a) / total : 0, rk = rank.get(a);
+      let pill = null;
+      if (rk && before && before.has(a) && before.get(a) !== rk) { const d = before.get(a) - rk; pill = el("span", { class: `rt-pill ${d > 0 ? "up" : d < 0 ? "down" : ""}`, text: d > 0 ? `▲ ${d}` : d < 0 ? `▼ ${-d}` : "–", title: d === 0 ? "Same place" : `${d > 0 ? "Gained" : "Lost"} ${Math.abs(d)} place${Math.abs(d) === 1 ? "" : "s"}` }); }
+      const cells = upc.map((u) => {
+        const k = `${rtype}:${u.index}`, mine = rtPicks.get(k), draft = rtDrafts.get(k), chosen = (draft || mine) === a;
+        const b = el("button", { type: "button", class: `rt-pk${chosen ? " on" : ""}`, "aria-pressed": String(chosen), "aria-label": `${chosen ? "Picked" : "Pick"} ${nameOf(a)} for the race at ${dayTime(u.start)}` }, chosen ? (draft && draft !== mine ? "Picked" : "Locked in") : "Pick");
+        if (!who || !raceContract || sending) b.disabled = true;
+        b.addEventListener("click", () => {
+          if (batchOn()) { if (rtDrafts.get(k) === a) rtDrafts.delete(k); else rtDrafts.set(k, a); rtRender(true); return; }
+          sendPick(u.index, a, rtype);
+        });
+        return b;
+      });
+      const lane = el("div", { class: `pr-lane rt-lane${rk === 1 && !ended ? " lead" : ""}${ended && rk && endLabel(ROt, a, rk - 1).win ? " win" : ""}`, style: grid, "data-addr": a },
+        el("div", { class: "pr-who" }, el("span", { class: "pr-rank", text: ((q) => q > 0 ? ord(q) : "–")(ended && ROt ? (ROt.pending ? 0 : ROt.placings.indexOf(a) + 1) : rk || 0) }), el("span", { class: "pr-dot", style: `background:${colour(a)}` }),
+          el("a", { class: "pr-name", href: EXPLORER + a, target: "_blank", rel: "noopener noreferrer", text: nameOf(a) }), pill || "",
+          el("span", { class: "pr-meta", text: `${h ? `×${h.toFixed(2)} per block` : "no handicap this hour"} · ${fmt(r ? r.blocks : 0)} blocks${sh ? ` · ${fmt(sh * 100, sh < 0.01 ? 2 : 1)}% VHP` : ""}` })),
+        el("div", { class: `pr-run${ended ? " over" : ""}` }, el("div", { class: "pr-shade", style: `width:${frac > 0 ? POS(frac) : "0"}` }), el("div", { class: "pr-trail", style: `width:${POS(x / 100)};background:${colour(a)}` }),
+          el("img", { class: "pr-horse rt-animal", alt: "", "aria-hidden": "true", src: `media/animals/${ANIMAL[rtype]}.png`, width: "40", height: "40", style: `left:calc(${POS(x / 100)} - 20px)` }), el("div", { class: "pr-nowline", style: `left:${POS(frac)}` })),
+        el("div", { class: "pr-gap" }, r ? ((() => { const L = ended ? endLabel(ROt, a, rk - 1) : { text: rk === 1 ? "Leading" : null }; return L.text ? el("b", { text: L.text }) : `${fmt(r.behind, 1)} behind`; })()) : "–", el("br"), el("span", { class: "ago", text: `${fmt(r ? r.steps : 0, 1)} steps` })),
+        ...cells);
+      return lane;
+    });
+    $("rt-track").replaceChildren(head, ...lanes);
+  }
+  function rtTabs() {
+    const nav = $("race-types");
+    if (!typesLive()) {
+      // Owner, 15 Nov: before the race types start, show them as greyed "coming soon" tabs (no picks, no data loaded).
+      const soon = M.TYPES_ON_WEEK !== null && M.weekOf(Date.now()) < M.TYPES_ON_WEEK;
+      nav.hidden = !soon; nav.classList.toggle("soon", soon);
+      if (soon) {
+        const at = new Date(M.weekStart(M.TYPES_ON_WEEK)).toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "America/New_York" });
+        nav.replaceChildren(el("p", { class: "rt-soon", text: `Coming ${at} ET: 1-hour, 2-hour, daily and weekly races.` }),
+          ...ORDER.filter((t) => t !== 0).map((t) => el("button", { type: "button", disabled: "", "aria-disabled": "true", title: `Opens ${at} ET` },
+            M.TYPES[t].name, el("small", { text: "Opens soon" }))));
+      }
+      return;
+    }
+    nav.hidden = false; nav.classList.remove("soon");
+    nav.replaceChildren(...ORDER.map((t) => el("button", { type: "button", "aria-pressed": String(t === rtype), onclick: () => rtSelect(t) },
+      M.TYPES[t].name, el("small", { text: `1st ${M.TYPES[t].places[0]} · 2nd ${M.TYPES[t].places[1]} · 3rd ${M.TYPES[t].places[2]}` }))));
+  }
+  function rtSelect(t) {
+    rtype = t;
+    for (const id of ["rt-track", "rt-picks"]) { const z = $(id); if (z) z.replaceChildren(); }   // L-9: no row of the old type stays on screen
+    try { localStorage.setItem("pr-type", String(t)); } catch { /* per-viewer convenience only */ }
+    for (const id of ["live", "pick-zone"]) { const n = $(id); if (n) n.hidden = t !== 0; }
+    { const h = $("history"); if (h) h.hidden = t !== 0 || rulerHidesHistory; }   // Repo Lens #G-28 G28-2: the Ruler's table replaces it in an ON week
+    $("typed").hidden = t === 0;
+    rtTabs();
+    if (t) { rtLoadMine().then(() => rtRender(true)); }
+  }
+  const upcoming = (type) => {
+    const i = M.typedIndex(type, Date.now()), n = type === 1 ? 6 : type === 2 ? 6 : 1;
+    return Array.from({ length: n }, (_, k) => M.typedRace(type, i + 1 + k));
+  };
+  async function rtLoadMine() {
+    rtPicks = new Map();
+    const who = me();
+    if (!who || !raceContract || !rtype) return;
+    const list = [M.typedRace(rtype, M.typedIndex(rtype, Date.now())), ...upcoming(rtype)];
+    try {
+      const got = await Promise.all(list.map((r) => raceContract.functions.get_pick({ player: who, race: M.contractRace(rtype, r.index) }).then((x) => [r.index, x.result && x.result.pick && x.result.pick.horse])));
+      for (const [i, h] of got) if (h) rtPicks.set(`${rtype}:${i}`, h);
+    } catch { /* shown as no pick */ }
+  }
+  function rtRender(force = false) {
+    if (!rtype || $("typed").hidden) return;
+    const T = M.TYPES[rtype], cur = M.typedRace(rtype, M.typedIndex(rtype, Date.now())), who = me();
+    const fun = M.restRace(cur.start);
+    $("rt-title").textContent = `${T.name} race · ${dayTime(cur.start)} – ${rtype >= 3 ? dayTime(cur.end) : clock(cur.end)}${rtype === 3 ? " (the UTC day)" : rtype === 4 ? " (Monday to Saturday, UTC)" : ""}`;
+    $("rt-tag").textContent = `${dur(cur.end - Date.now())} left`;
+    const card = cardAt(rtype, Math.floor(Date.now() / M.HOUR) * M.HOUR);
+    const notes = [`1st scores ${T.places[0]} points, 2nd ${T.places[1]} and 3rd ${T.places[2]}, on the one Producer Race board.`];
+    if (fun) notes.push("Sunday fun race: it counts on Today and All time, not the week.");
+    if (card && !card.field.some((x) => x.a === POOL)) {
+      const tot = card.field.concat(card.paddock || []).reduce((t, x) => t + x.vhp, 0), need = card.blocksPerRace > 0 ? Math.ceil(M.MIN_K * tot / card.blocksPerRace) : 0;
+      notes.push(`The Knode Games pool sits out ${T.name.toLowerCase()} races for now: a producer needs about ${fmt(need)} VHP (10 expected blocks) to enter one this short.`);
+    }
+    $("rt-note").textContent = notes.join(" ");
+    const st = liveStandings(cur);
+    rtBoard(cur, card, st);
+    // Picks: the next races of this type.
+    const key = JSON.stringify([who, rtype, cur.index, [...rtPicks], sending, card && card.at]);
+    if (force || key !== rtKey) {
+      rtKey = key;
+      $("rt-who").textContent = who ? `Picking as ${nameOf(who)}. Tap Pick next to a producer, in the column of the race you want. Picks lock when a race starts.` : "Connect a wallet to pick.";
+      const rows = [];
+      const mineCur = rtPicks.get(`${rtype}:${cur.index}`);
+      rows.push(el("div", { class: "pk-row live" }, el("div", { class: "pk-when" }, el("b", { text: "Live now" }), el("span", { text: `ends ${rtype >= 3 ? dayTime(cur.end) : clock(cur.end)}` })),
+        el("div", { class: "pk-now", text: mineCur ? `Your pick: ${nameOf(mineCur)} 🔒` : "No pick for this race (locked)" }), el("span")));
+      $("rt-picks").replaceChildren(...rows);
+      renderBar();
+      // The latest results of this type, with your pick.
+      const done = [];
+      for (let i = cur.index - 1; i >= cur.index - 8; i--) {
+        const r = M.typedRace(rtype, i), rec = typedRec(rtype, r.id), res = rec && rec.result;
+        if (!(res && res.final) && i !== cur.index - 1) continue;      // only real results, and the race that just ended
+        const p = res && Array.isArray(res.picks) && who ? res.picks.find((x) => x[0] === who) : null;
+        done.push(el("div", { class: "pk-row done" }, el("div", { class: "pk-when" }, el("b", { text: dayTime(r.start) }), el("span", { text: res && res.final ? (res.missed ? "not run" : "final") : "checking" })),
+          ...(() => {
+            if (!(res && res.final && !res.missed)) return [el("div", { class: "pk-now", text: "Results come in once the race's last hour is final." }), el("span", { text: "" })];
+            const o = pickOutcome(r, rtype, res, p);   // G28-1: the ruler's places in an ON week (option A: the only ones that count)
+            return [el("div", { class: "pk-now", text: o.text }), el("span", { class: !p || o.wait ? "" : o.ok ? "pk-ok" : "pk-no", text: o.mark })];
+          })()));
+      }
+      $("rt-results").replaceChildren(...done);
+    }
+  }
+  setInterval(() => { if (!document.hidden && rtype) rtRender(); }, 6000);
+
+  // ── start ──
+  (async () => {
+    // The wallet's settings (Mana sponsor, guest play) first, so Connect offers everything at once.
+    if (!typesLive()) rtTabs();   // the coming-soon tabs need no network: draw them at once
+    const picksReady = setupPicks().catch(() => {});
+    try { await refresh(true); }
+    catch (e) { say("Couldn't reach the Koinos network. Trying again in a moment…"); }
+    await picksReady; renderPicks();
+    rtTabs(); if (typesLive() && rtype) rtSelect(rtype); else rtype = 0;
+    loadBoard(); loadRuler();
+    setInterval(() => { if (!document.hidden) { loadBoard(); loadRuler(); } }, 300000);
+    setInterval(() => { if (!document.hidden && raceContract) loadMine(); }, 60000);
+    let shown = M.raceIndex(Date.now());
+    setInterval(() => { if (!document.hidden) refresh().catch(() => {}); }, 6000);   // new blocks every ~3 s: a light top-up
+    setInterval(() => {
+      if (!B) return;
+      // A new race starts by itself: every horse back to 0, the last one goes to the results.
+      const now = M.raceIndex(Date.now());
+      if (now !== shown) { shown = now; if (view == null) { prov = null; refresh().catch(() => {}); loadMine(); } }
+      const race = raceObj(view == null ? now : view);
+      if (Date.now() < race.end) {
+        const frac = Math.min(1, Math.max(0, (Date.now() - race.start) / M.RACE));
+        $("clock-fill").style.width = `${frac * 100}%`;
+        if (view == null) $("clock-txt").textContent = `${dur(race.end - Date.now())} left · finishes ${clock(race.end)}`;
+      }
+      document.querySelectorAll("#pk-list [data-lock]").forEach((n) => { const t = Number(n.dataset.lock); n.textContent = n.textContent.replace(/locks in .*$/, `locks in ${dur(t - Date.now())}`); });
+      document.querySelectorAll("#feed .ago[data-t]").forEach((n) => { const t = Number(n.dataset.t); n.textContent = n.textContent.replace(/· \d+ s ago$/, `· ${Math.max(0, Math.round((Date.now() - t) / 1000))} s ago`); });
+    }, 1000);
+  })();
+
+  // Stake in the Race (vault game 7): the shared panel stays hidden until the Knode Games vault (v6) is live.
+  if (window.KStake) window.KStake.mount(document.getElementById("stake"), { game: 7 });
+  // The staked / free status bar at the top of the page (Hub, PR #41): links to the full staking page.
+  if (window.KStake && window.KStake.badge) window.KStake.badge(document.getElementById("stake-badge"), { game: 7 });
+})();

@@ -1,0 +1,46 @@
+/* "Start here" page — builds on styles.css tokens */
+.start { padding-bottom: 20px; }
+.start-hero { margin: 40px 0 24px; max-width: 760px; }
+.start-hero h1 { font: 800 clamp(2.2rem, 6vw, 3.6rem)/1.02 var(--display); letter-spacing: -0.03em; margin: 12px 0 14px; }
+.start-hero .lede { font-size: 1.12rem; color: var(--muted); }
+.start-sec { margin-top: 44px; }
+.sec-title { font: 800 1.7rem/1.1 var(--display); letter-spacing: -0.02em; margin-bottom: 16px; }
+.small { font-size: .88rem; margin-top: 12px; }
+
+
+.routes { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 16px; }
+.route { background: var(--surface); border-radius: var(--r-lg); padding: 22px; box-shadow: var(--shadow); }
+.route h3 { font-size: 1.15rem; margin: 10px 0 14px; }
+.route-tag { display: inline-block; font-size: .75rem; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--violet); background: var(--violet-soft, color-mix(in srgb, var(--violet) 12%, transparent)); padding: 4px 10px; border-radius: 999px; }
+.flow { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; }
+.flow li { position: relative; display: flex; flex-direction: column; padding: 10px 12px 10px 34px; }
+.flow li::before { content: ""; position: absolute; left: 10px; top: 16px; width: 12px; height: 12px; border-radius: 50%; background: var(--violet); }
+.flow li:not(:last-child)::after { content: ""; position: absolute; left: 15px; top: 30px; bottom: -14px; width: 2px; background: color-mix(in srgb, var(--violet) 35%, var(--line)); }
+.flow li:last-child::before { background: var(--mint, #22c55e); }
+.flow span { color: var(--muted); font-size: .9rem; }
+
+.bridge { display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; align-items: start; }
+.bridge-steps { margin: 0; padding: 0; list-style: none; counter-reset: b; display: grid; gap: 10px; }
+.bridge-steps li { counter-increment: b; position: relative; background: var(--surface); border-radius: var(--r-md); padding: 14px 16px 14px 54px; box-shadow: var(--shadow); }
+.bridge-steps li::before { content: counter(b); position: absolute; left: 14px; top: 12px; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 9px; background: var(--violet); color: var(--violet-ink); font: 800 .95rem/1 var(--display); }
+.bridge-note h3, .safety h2 { margin-bottom: 8px; }
+.bridge-note ul, .safety ul { margin: 0; padding-left: 18px; display: grid; gap: 8px; color: var(--muted); }
+.safety b { color: var(--ink); }
+@media (max-width: 760px) { .bridge { grid-template-columns: 1fr; } .top-row .tabs { overflow-x: auto; } }
+
+/* Official token addresses (shared look with get.html) */
+.tokens { margin: 18px 0; padding: 16px; border: 1px solid var(--line); border-radius: var(--r-sm, 14px); background: var(--surface); }
+.tokens h2, .tokens h3 { margin: 0 0 6px; }
+.tokens p { margin: 0 0 10px; color: var(--muted); }
+.tok-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.tok-list li { display: grid; gap: 2px; padding-top: 10px; border-top: 1px solid var(--line); }
+.tok-list li:first-child { border-top: 0; padding-top: 0; }
+.tok-list a { font-size: 14px; }
+.tokens .addr { display: flex; gap: 6px; align-items: center; margin: 2px 0; }
+.tokens .addr code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; word-break: break-all; flex: 1; }
+.tokens .copy { font: inherit; font-size: 12px; font-weight: 700; padding: 6px 10px; min-height: 32px; border-radius: 99px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; }
+
+/* ruler.html: "How each game uses the Ruler" */
+.rg-list { display: grid; grid-template-columns: minmax(150px, 28%) 1fr; gap: 8px 16px; margin: 8px 0; }
+.rg-list dt { font-weight: 700; } .rg-list dd { margin: 0; }
+@media (max-width: 640px) { .rg-list { grid-template-columns: 1fr; gap: 2px; } .rg-list dd { margin-bottom: 10px; } }

@@ -1,0 +1,64 @@
+# KnodeGames2-shadow ONLY (this file is not in KnodeGames2). Every hour at :30, after the hour's recorders, compare
+# each data branch this shadow wrote with the live repository's same branch, and publish the report to shadow-report.
+# Read-only on the live repository (public, no token). No secrets.
+name: Shadow compare
+
+on:
+  schedule:
+    - cron: "30 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: shadow-compare
+  cancel-in-progress: false
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Fetch both sides
+        run: |
+          set -uo pipefail
+          LIVE=https://github.com/bawcejawn/KnodeGames.git
+          SHADOW="https://github.com/${GITHUB_REPOSITORY}.git"
+          for b in games-data race-data blocks-data vhp-data names-data stats-data prize-settings race-samples game-data; do
+            for side in live shadow; do
+              d="$RUNNER_TEMP/$side/$b"; mkdir -p "$d"; git -C "$d" init -q
+              url=$SHADOW; ref=$b
+              if [ "$side" = live ]; then url=$LIVE; [ "$b" = game-data ] && ref=main; fi
+              if git -C "$d" fetch -q --depth 1 "$url" "$ref" && git -C "$d" checkout -q FETCH_HEAD; then :; else echo "::warning::$side $b not fetched"; fi
+            done
+            # The live questions sit on the old repository's main, in game-data/; keep only that folder.
+            if [ "$b" = game-data ]; then
+              l="$RUNNER_TEMP/live/game-data"; [ -d "$l/game-data" ] && find "$l" -mindepth 1 -maxdepth 1 ! -name game-data ! -name .git -exec rm -rf {} +
+              for f in deployment.json game.json README.md; do rm -f "$l/game-data/$f" "$RUNNER_TEMP/shadow/game-data/game-data/$f"; done
+            fi
+          done
+      - name: Compare
+        run: node tools/shadow-compare.mjs "$RUNNER_TEMP/live" "$RUNNER_TEMP/shadow" "$RUNNER_TEMP/report" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Publish the report (shadow-report branch)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          stamp=$(date -u +%Y-%m-%dT%H%MZ)
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          work="$RUNNER_TEMP/pub"; git init -q "$work"; cd "$work"
+          if git fetch -q --depth 1 "$remote" shadow-report 2>/dev/null; then git checkout -q -b shadow-report FETCH_HEAD; else git checkout -q --orphan shadow-report; fi
+          mkdir -p "runs/$stamp"
+          cp "$RUNNER_TEMP/report/report.md" "$RUNNER_TEMP/report/report.json" "runs/$stamp/"
+          cp "$RUNNER_TEMP/report/report.md" LATEST.md
+          git -c user.name=shadow -c user.email=shadow@example.invalid add -A
+          git -c user.name=shadow -c user.email=shadow@example.invalid commit -qm "shadow compare $stamp"
+          git push -q "$remote" HEAD:refs/heads/shadow-report

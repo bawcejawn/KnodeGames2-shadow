@@ -1,0 +1,20 @@
+{
+  "network": "mainnet",
+  "rpc": "https://koinos.armana.io",
+  "contract": "1FKTpXBhhHEbu5vVchM8UsVbAvPArJsRmR",
+  "owner": "1635QUrBNDp7WqmFkRvrkGwjJXTtFvH717",
+  "treasury": "1635QUrBNDp7WqmFkRvrkGwjJXTtFvH717",
+  "koin": "19GYjDBVXU7keLbYvMLazsGQn3GTWHjHkK",
+  "vhp": "12Y5vW6gk8GceH53YfRkRre2Rrcsgw7Naq",
+  "pob": "159myq5YUhhoVWu3wsHKHiJYKPKGUrGiyv",
+  "wasmSha256": "309506ccfaadd3427e937aa88cd34c9ea2a9e6088e49e51f014d546489dd5f35",
+  "uploaded": true,
+  "deployedAt": "2026-10-16T23:20:00.000Z",
+  "feeBps": 300,
+  "timelockLength": "172800000",
+  "chainId": "EiBZK_GGVP0H_fXVAM3j6EAuz3-B-l3ejxRSewi7qIBfSA==",
+  "producerKey": "AzCYCDLDa49PPVHKk60xQbOErS6XY1TcEA8bkSo8Sk6E",
+  "payer": "self",
+  "v1UploadTx": "0x122054bac9c483a15f641c8553b3be541ae876eb7583a7299251e078500f005d6aee",
+  "upgradedAt": "2026-10-28T19:25:15.274Z"
+}

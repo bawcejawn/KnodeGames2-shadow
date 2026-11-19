@@ -1,0 +1,8 @@
+{
+  "network": "mainnet",
+  "rpc": "https://api.koinos.io",
+  "contract": "1EN7xU8R9tQXjHvrX79qZvvvGkkKWVnB5K",
+  "wasmSha256": "9993581baf822cd070331008441c5ad974f5c0b134520dfb7422b9efd1873864",
+  "uploadTx": "0x12200193e60c04570d4c6c0be80a8846b712eafc41bdcb964225b83956c22462d729",
+  "uploadedAt": "2026-11-13T20:46:48.848Z"
+}

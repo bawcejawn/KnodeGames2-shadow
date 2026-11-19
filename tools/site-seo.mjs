@@ -1,0 +1,111 @@
+// Writes each page's search and share tags (title, description, canonical link, Open Graph, Twitter, and JSON-LD on the
+// game page), plus robots.txt and sitemap.xml at the site root. Run after changing SITE (for example when the custom
+// domain is live) or a page's text:   node tools/site-seo.mjs
+// SITE is the site's address. The pages sit at the repository root, which GitHub Pages serves as the domain root, so
+// robots.txt and sitemap.xml are written there too.
+import fs from "node:fs";
+
+export const SITE = "https://knodegames.com/";
+const ROOT = new URL("../web/", import.meta.url).pathname;
+
+export const PAGES = [
+  { file: "index.html", path: "", title: "Knode Games: the daily Koinos prediction game", short: "Knode Games: call the next blocks",
+    desc: "A free game on the Koinos blockchain: pick block producers and climb the weekly leaderboards. Top free players can win VHP prizes; stakers share the week's rewards.", image: "og-knode.png", priority: "1.0" },
+  { file: "games.html", path: "games.html", title: "Games · Knode Games", short: "Knode Games: every game",
+    desc: "Every Knode Games game in one place: free and staked prediction games about Koinos block producers, each with its own weekly leaderboard.", image: "og-knode.png", priority: "0.9" },
+  { file: "get.html", path: "get.html", title: "Get KOIN and VHP · Knode Games", short: "Get KOIN and VHP",
+    desc: "How to get KOIN and VHP to play Knode Games: a Koinos wallet, vKOIN on Uniswap or Jupiter, the Vortex bridge, burn into VHP, stake, and swap back any time.", image: "og-knode.png", priority: "0.8" },
+  { file: "install.html", path: "install.html", title: "Get the Knode Games app · iPhone, Android and computer", short: "Get the Knode Games app",
+    desc: "Install Knode Games on your phone or computer in three taps, straight from the website. No app store needed.", image: "og-knode.png", priority: "0.8" },
+  { file: "swap.html", path: "swap.html", title: "Knode Games Swap · Swap VHP for KOIN on Koinos", short: "Knode Games Swap",
+    desc: "Swap VHP back into KOIN in one step on Koinos. A small 3% fee, paid out from Knode Games' own node.", image: "og-swap.png", priority: "0.7" },
+  { file: "start.html", path: "start.html", title: "New to Koinos? Start here · Knode Games", short: "New to Koinos? Start here",
+    desc: "From dollars in the bank to playing Knode Games: get a wallet, get KOIN, cross the Vortex bridge, and explore apps built on Koinos.", image: "og-knode.png", priority: "0.7" },
+  { file: "ecosystem.html", path: "ecosystem.html", title: "Koinos ecosystem · Knode Games", short: "Koinos ecosystem",
+    desc: "Apps and sites built on Koinos, and two ways to run your own Koinos node: Koinos AI, or our step-by-step guide with PowerShell and Docker.", image: "og-knode.png", priority: "0.6" },
+  { file: "node.html", path: "node.html", title: "Koinos producer lookup · Knode Games", short: "Koinos producer lookup",
+    desc: "The public story of any Koinos block producer: is it producing, is its key set, what each block paid, forecasts, and the producers next to it by VHP.", image: "og-knode.png", priority: "0.6" },
+  { file: "run-node.html", path: "run-node.html", title: "Run a Koinos node · Knode Games", short: "Run your own Koinos node",
+    desc: "Start a Koinos mainnet node and block producer on your own computer, step by step: Docker, Armana's weekly chain snapshot, registering your key, VHP, and keeping it live.", image: "og-knode.png", priority: "0.6" },
+  { file: "race.html", path: "race.html", title: "Producer Race · Four handicapped races a day between Koinos block producers", short: "Koinos Producer Race",
+    desc: "Every Koinos block producer is a horse. Four 6-hour races a day, every day (Sunday's are for fun), handicapped by VHP so every horse has the same chance. Free, live from the chain.", image: "og-knode.png", priority: "0.7" },
+  { file: "fantasy.html", path: "fantasy.html", title: "Fantasy Producers · Draft a team of Koinos block producers", short: "Fantasy Producers",
+    desc: "Draft five Koinos block producers under a salary cap, pick a captain who scores double, and score on how reliably they sign their blocks. Weekly league and Weekly Rival.", image: "og-knode.png", priority: "0.6" },
+  { file: "blockx.html", path: "blockx.html", title: "Who Signs Block X · Pick the Koinos producer of the next big blocks", short: "Who Signs Block X",
+    desc: "A target about every hour (every 1,200 Koinos blocks). Pick the producer you think signs it; smaller producers score more. Free, with weekly VHP prizes.", image: "og-knode.png", priority: "0.6" },
+  { file: "combo.html", path: "combo.html", title: "Combo Card · Build a parlay of Koinos producer calls", short: "Combo Card",
+    desc: "Build a card of 2 to 10 calls on Koinos producers: race wins, top-3 finishes, top half and who signs a block. Every leg must hit; harder legs pay more.", image: "og-knode.png", priority: "0.5" },
+  { file: "pulse.html", path: "pulse.html", title: "Koinos network pulse · Blocks, transactions and producers, live", short: "Koinos network pulse",
+    desc: "The Koinos chain right now: block time, transactions per hour, who is producing blocks, and how much KOIN is burned into VHP.", image: "og-knode.png", priority: "0.6" },
+  { file: "mana.html", path: "mana.html", title: "Mana levels · Check any Koinos wallet's Mana", short: "Koinos Mana levels",
+    desc: "Enter any Koinos wallet address to see its Mana tank: how much is left, when it's full again, and how much comes back every hour and day.", image: "og-knode.png", priority: "0.6" },
+  { file: "burn.html", path: "burn.html", title: "Burn KOIN into VHP · Knode Games", short: "Burn KOIN into VHP",
+    desc: "Turn KOIN into VHP, 1 for 1, with your own wallet, so you can stake it in Knode Games or produce blocks.", image: "og-knode.png", priority: "0.5" },
+  { file: "names.html", path: "names.html", title: "Your Koinos @name · Knode Games", short: "Get your Koinos @name",
+    desc: "Swap your long Koinos address for an @name that shows on Knode Games and across Koinos. Free: it only uses a little of your wallet's Mana.", image: "og-knode.png", priority: "0.4" },
+  { file: "stake.html", path: "stake.html", title: "Staking · Knode Games", short: "Stake VHP in Knode Games",
+    desc: "Stake VHP in any Knode Games game: see your stake in every game, move it between games, claim rewards, and withdraw any time.", image: "og-knode.png", priority: "0.6" },
+  { file: "fairness.html", path: "fairness.html", title: "Fairness · Knode Games", short: "Fairness and the house",
+    desc: "Knode Games runs block producers and games about block producers. This page says who operates what, and what a public node can and cannot be stopped from doing.", image: "og-knode.png", priority: "0.5" },
+  { file: "trust.html", path: "trust.html", title: "Trust and safety · Knode Games", short: "Trust and safety",
+    desc: "Live checks on Knode Games' contracts: who controls what, the code fingerprints, the timelocks, and whether every stake is covered.", image: "og-knode.png", priority: "0.5" },
+  { file: "ruler.html", path: "ruler.html", title: "How we measure producers fairly · Knode Games", short: "How we measure producers fairly",
+    desc: "How every Knode Games race measures block producers the same way, so big and small nodes get an equal shot, and what a Void means.", image: "og-knode.png", priority: "0.5" },
+  { file: "terms.html", path: "terms.html", title: "Terms and risks · Knode Games", short: "Terms and risks",
+    desc: "The terms and the risks of playing Knode Games and using Knode Games Swap.", image: "og-knode.png", priority: "0.3" },
+];
+
+const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+
+export function seoBlock(p) {
+  const url = SITE + p.path, img = SITE + "media/" + p.image;
+  const lines = [
+    "<!-- seo:start (written by tools/site-seo.mjs; edit there) -->",
+    `<meta name="description" content="${esc(p.desc)}">`,
+    `<link rel="canonical" href="${url}">`,
+    `<meta property="og:type" content="website">`,
+    `<meta property="og:site_name" content="Knode Games">`,
+    `<meta property="og:title" content="${esc(p.short)}">`,
+    `<meta property="og:description" content="${esc(p.desc)}">`,
+    `<meta property="og:url" content="${url}">`,
+    `<meta property="og:image" content="${img}">`,
+    `<meta property="og:image:width" content="1200">`,
+    `<meta property="og:image:height" content="630">`,
+    `<meta property="og:image:alt" content="${esc(p.short)}">`,
+    `<meta name="twitter:card" content="summary_large_image">`,
+    `<meta name="twitter:title" content="${esc(p.short)}">`,
+    `<meta name="twitter:description" content="${esc(p.desc)}">`,
+    `<meta name="twitter:image" content="${img}">`,
+  ];
+  if (p.file === "index.html") {
+    const ld = { "@context": "https://schema.org", "@graph": [
+      { "@type": "WebSite", name: "Knode Games", url: SITE, description: p.desc },
+      { "@type": ["WebApplication", "VideoGame"], name: "Knode Games", url: SITE, applicationCategory: "GameApplication", genre: "Prediction game",
+        operatingSystem: "Any (web browser; installable)", description: p.desc, offers: { "@type": "Offer", price: "0", priceCurrency: "USD" } },
+    ] };
+    // A data block, not a script: browsers never run it, so the Content-Security-Policy does not apply to it.
+    lines.push(`<script type="application/ld+json">${JSON.stringify(ld).replace(/</g, "\\u003c")}</script>`);
+  }
+  lines.push("<!-- seo:end -->");
+  return lines.map((l) => "  " + l).join("\n");
+}
+
+const STRIP = [/^\s*<meta name="description"[^>]*>\n/gm, /^\s*<link rel="canonical"[^>]*>\n/gm, /^\s*<meta property="og:[^>]*>\n/gm, /^\s*<meta name="twitter:[^>]*>\n/gm];
+
+export function apply(html, p) {
+  let s = html.replace(/^\s*<!-- seo:start[\s\S]*?<!-- seo:end -->\n/m, "");
+  for (const r of STRIP) s = s.replace(r, "");
+  s = s.replace(/<title>[^<]*<\/title>/, `<title>${esc(p.title).replace(/&quot;/g, '"')}</title>`);
+  return s.replace(/(<title>[^<]*<\/title>\n)/, `$1${seoBlock(p)}\n`);
+}
+
+if (process.argv[1] && process.argv[1].endsWith("site-seo.mjs")) {
+  for (const p of PAGES) {
+    const f = ROOT + p.file;
+    fs.writeFileSync(f, apply(fs.readFileSync(f, "utf8"), p));
+  }
+  const today = new Date().toISOString().slice(0, 10);
+  fs.writeFileSync(ROOT + "sitemap.xml", `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${PAGES.map((p) => `  <url><loc>${SITE + p.path}</loc><lastmod>${today}</lastmod><priority>${p.priority}</priority></url>`).join("\n")}\n</urlset>\n`);
+  fs.writeFileSync(ROOT + "robots.txt", `# Knode Games, https://knodegames.com\nUser-agent: *\nAllow: /\nDisallow: /producer.html\nDisallow: /admin/\nSitemap: ${SITE}sitemap.xml\n`);
+  console.log(`Wrote tags for ${PAGES.length} pages, sitemap.xml and robots.txt (site: ${SITE}).`);
+}

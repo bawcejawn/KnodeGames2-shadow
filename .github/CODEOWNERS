@@ -1,0 +1,9 @@
+# Carl reviews changes to money, keys, and the automation before they merge.
+# GitHub only enforces this after branch protection is turned on. See docs/GO-LIVE.md.
+
+/contracts/            @bawcejawn
+/bot/                  @bawcejawn
+/kit/                  @bawcejawn
+/games/                @bawcejawn
+/.github/              @bawcejawn
+/web/                  @bawcejawn

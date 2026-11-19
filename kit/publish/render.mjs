@@ -1,0 +1,432 @@
+// Shared Game Kit: renders the kit games' record and publish jobs for one data branch (design §A, GAME_KIT.md §1).
+// The publish job runs NO repository code: it runs kit/publish/check.inline.mjs copied here byte for byte (a heredoc),
+// with the games' settings as a literal. tools/kit-render-workflows.mjs writes the result between markers in the
+// workflow; a test fails if the committed workflow differs from what this renders.
+import fs from "node:fs";
+import { DATA_BRANCHES, JOB_WAIT_MS } from "./check.inline.mjs";
+
+export const BEGIN = "  # ── BEGIN kit-rendered jobs (tools/kit-render-workflows.mjs; edit kit/, never these lines) ──";
+export const END = "  # ── END kit-rendered jobs ──";
+export const HEREDOC = "KIT_CHECK_INLINE";
+const CHECKOUT = "actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0";
+const NODE = "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0";
+const UP = "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2";
+const DOWN = "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0";
+
+/** Phase 1b (G3, the Ruler chat 11–12 Nov): a ruler game's cards are rebuilt in the publish job by the WHOLE vhp_ruler.py,
+ *  embedded byte for byte (as vhp-ruler.yml and race.yml embed it; a test keeps the copy equal), plus this small glue
+ *  (also embedded, never read from the checkout). For each file the run would publish that isn't already published
+ *  byte for byte (a W<week>.json or inputs/W<week>.json), it rebuilds every listed card from the published vhp-data
+ *  (make_card + score_card + card_json, the game's settings as listed) and writes the sha256 values that match to
+ *  $KIT_CARDS_DIR/<slug>.json; the check then holds any file whose cards aren't all there. Already-published files
+ *  aren't rebuilt again, so data pruned later (VHP_KEEP_DAYS) never holds an old final. */
+export const RULER_HEREDOC = "KIT_RULER_PY", GLUE_HEREDOC = "KIT_CARDS_PY";
+export const KIT_CARDS_PY = `import sys, os, json, hashlib, re
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import vhp_ruler as V
+data, ind, pubd, outp = sys.argv[1:5]
+def names(d):
+    out = []
+    if os.path.isdir(d):
+        out += [f for f in sorted(os.listdir(d)) if re.fullmatch(r"W([0-9]{3}|[1-9][0-9]{3})[.]json", f)]
+    i = os.path.join(d, "inputs")
+    if os.path.isdir(i):
+        out += ["inputs/" + f for f in sorted(os.listdir(i)) if re.fullmatch(r"W(0|[1-9][0-9]{0,3})[.]json", f)]
+    # KG parts v1: a parts week's cards are in its wk part (extra.opt.cards)
+    if os.path.isdir(d):
+        for w in sorted(os.listdir(d)):
+            wd = os.path.join(d, w)
+            if re.fullmatch(r"W([0-9]{3}|[1-9][0-9]{3})", w) and os.path.isdir(wd) and not os.path.islink(wd):
+                out += [w + "/" + f for f in sorted(os.listdir(wd)) if re.fullmatch(r"wk[.][0-9a-f]{12}[.]json", f)]
+    return out
+HEX = re.compile(r"[0-9a-f]{64}")
+def entries(j):
+    """A file's cards, only if the file is well formed: a dict whose cards is a list of [settings dict, sha256] with no
+    sha256 twice (the check holds anything else; nothing from a malformed file is rebuilt)."""
+    if isinstance(j, dict) and j.get("kgparts") == 1:
+        o = j.get("extra", {}).get("opt") if isinstance(j.get("extra"), dict) else None
+        try:
+            j = json.loads(o) if isinstance(o, str) else None
+        except ValueError:
+            j = None
+    if not isinstance(j, dict) or not isinstance(j.get("cards"), list):
+        return None
+    seen, out = set(), []
+    for x in j["cards"]:
+        if not (isinstance(x, list) and len(x) == 2 and isinstance(x[0], dict) and isinstance(x[1], str) and HEX.fullmatch(x[1])):
+            return None
+        if x[1] in seen:
+            return None
+        seen.add(x[1]); out.append((x[0], x[1]))
+    return out
+refs = {}
+for rel in names(ind):
+    p, q = os.path.join(ind, rel), os.path.join(pubd, rel)
+    if os.path.islink(p) or not os.path.isfile(p):
+        continue
+    raw = open(p, "rb").read()
+    if os.path.isfile(q) and open(q, "rb").read() == raw:
+        continue
+    try:
+        j = json.loads(raw)
+    except ValueError:
+        continue
+    for s, h in entries(j) or []:
+        # #G-24 G24-1: every entry is rebuilt against ITS OWN settings: the key is the pair, never the sha256 alone.
+        refs[json.dumps([s, h], sort_keys=True, separators=(",", ":"))] = (s, h)
+ok, bad, to = [], {}, None
+# #G-78 G78-4: the last block of the ruler data this job read, so the check can refuse a week file's vhpTo past it
+try:
+    L, _ = V.load_ledger(data)
+    to = int(L.to)
+except Exception:
+    L = None
+if refs and L is None:
+    L, _ = V.load_ledger(data)
+if refs:
+    for key, (s, h) in sorted(refs.items()):
+        try:
+            V.check_settings(s)
+            card = V.make_card(L, s["game"], s["round"], s["window"], int(s["c"]), s["ownRule"], s["paying"], s["pooled"], s["minK"], s["poolRule"], mode=s.get("mode"), include=s.get("include"), version=s.get("version", V.RULE_VERSION))
+            got = hashlib.sha256(V.card_json(V.score_card(L, card)).encode("utf-8")).hexdigest()
+            if got == h:
+                ok.append([s, h])
+            else:
+                bad[key] = "the ruler's data gives " + got
+        except Exception as e:
+            bad[key] = str(e)[:200]
+os.makedirs(os.path.dirname(outp), exist_ok=True)
+with open(outp, "w") as fh:
+    json.dump({"ok": ok, "bad": bad}, fh, sort_keys=True)
+# #G-78 G78-4: the data's last block, beside it (the check refuses a week file's vhpTo past it)
+with open(outp[:-5] + ".to.json" if outp.endswith(".json") else outp + ".to.json", "w") as fh:
+    json.dump({"to": to}, fh)
+print("%d card(s) rebuilt, %d differ or failed" % (len(ok), len(bad)))
+`;
+/** The publish job's ruler step: vhp-data read-only, then vhp_ruler.py and the glue written from the workflow itself. */
+const RULER_STEP = (ruler) => `      - name: Take the ruler's data and code (vhp-data read-only; vhp_ruler.py embedded, no repository code)
+        run: |
+          set -euo pipefail
+          git init -q "$RUNNER_TEMP/vhp-data"
+          if git -C "$RUNNER_TEMP/vhp-data" fetch -q --depth 1 "https://github.com/\${GITHUB_REPOSITORY}.git" vhp-data 2>/dev/null; then
+            git -C "$RUNNER_TEMP/vhp-data" checkout -q FETCH_HEAD
+          else
+            echo "::error::vhp-data couldn't be fetched: ruler games' new files are held this run"
+          fi
+          mkdir -p "$RUNNER_TEMP/ruler-code" "$RUNNER_TEMP/kit-cards"
+          cat > "$RUNNER_TEMP/ruler-code/vhp_ruler.py" <<'${RULER_HEREDOC}'
+${ind("# BEGIN vhp_ruler.py\n" + ruler.replace(/\n$/, "") + "\n# END vhp_ruler.py", 10)}
+          ${RULER_HEREDOC}
+          cat > "$RUNNER_TEMP/ruler-code/kit_cards.py" <<'${GLUE_HEREDOC}'
+${ind(KIT_CARDS_PY.replace(/\n$/, ""), 10)}
+          ${GLUE_HEREDOC}
+`;
+
+/** vhp_ruler.py as the publish job embeds it, checked like the kit's own script. */
+export function rulerPy(root) {
+  const src = fs.readFileSync(new URL("ruler/vhp_ruler.py", root), "utf8");
+  if (src.includes("${{")) throw new Error("vhp_ruler.py may not contain an Actions expression");
+  for (const m of [RULER_HEREDOC, GLUE_HEREDOC]) if (src.split("\n").some((l) => l.trim() === m)) throw new Error(`vhp_ruler.py may not contain a line "${m}"`);
+  return src;
+}
+
+/** The check script exactly as the publish job runs it: the kit's file, then one line that runs it. */
+export const TRAILER = "\nmain();\n";
+export function inlineScript(root) {
+  const src = fs.readFileSync(new URL("kit/publish/check.inline.mjs", root), "utf8");
+  // KG parts v1: kit/parts byte for byte, as a data: module (it too imports only node:fs, node:path and node:crypto).
+  const parts = fs.readFileSync(new URL("kit/parts/parts.inline.mjs", root), "utf8");
+  if (/^\s*import\s.+from\s+["'](?!node:(fs|path|crypto)["'])/m.test(parts) || /\bimport\s*\(/.test(parts)) throw new Error("parts.inline.mjs may import only node:fs, node:path and node:crypto");
+  if (/^\s*import\s.+from\s+["'](?!node:(fs|path|crypto)["'])/m.test(src)) throw new Error("check.inline.mjs may import only node:fs, node:path and node:crypto");
+  if (src.includes("${{")) throw new Error("check.inline.mjs may not contain an Actions expression");
+  if (src.split("\n").some((l) => l.trim() === HEREDOC)) throw new Error(`check.inline.mjs may not contain a line "${HEREDOC}"`);
+  return PARTS_PREFIX(parts) + src + TRAILER;
+}
+/** The line before the check that loads the embedded kit/parts (base64, so its bytes pass through unchanged). */
+export const PARTS_PREFIX = (parts) => `globalThis.__KITPARTS = await import("data:text/javascript;base64,${Buffer.from(parts, "utf8").toString("base64")}");\n`;
+
+const ind = (s, n) => s.split("\n").map((l) => (l ? " ".repeat(n) + l : l)).join("\n");
+
+/** The kit's own workflow file for the kit games of a hand-written host workflow (Mon 16 Nov 2026: games.yml passed
+ *  GitHub's 500 KB limit with the kit block inside it, and every run failed at startup). */
+export const kitFileName = (host) => {
+  if (!/^[a-z][a-z0-9-]*\.yml$/.test(host)) throw new Error(`bad host workflow file ${host}`);
+  return `kit-${host}`;
+};
+/** The whole kit workflow file: a header, then the kit block. Its own hourly time, KIT_CRON, ten minutes after the host's
+ *  :47; it shares the host's concurrency group, so a host run still going waits it out and the two never push at once.
+ *  No workflow_run and no actions: write (audit L-9 and bot/workflow.test.ts forbid both). */
+export const KIT_CRON = "57 * * * *";
+export function renderKitFile({ host, hostName, group, block }) {
+  if (!/^[A-Za-z0-9][A-Za-z0-9 ()&.,!+-]{1,63}$/.test(hostName)) throw new Error(`bad host workflow name ${JSON.stringify(hostName)}`);
+  if (!/^[a-z][a-z0-9-]{1,63}$/.test(group)) throw new Error(`bad concurrency group ${group}`);
+  return `# GENERATED by tools/kit-render-workflows.mjs (npm run kit:render): never edit by hand.
+# The Shared Game Kit's jobs (.ai/standards/GAME_KIT.md) for the kit games of ${host} ("${hostName}"). They used to sit
+# inside ${host}; GitHub refuses a workflow file over 500 KB, so the kit has its own file (Mon 16 Nov 2026).
+# It runs every hour at :57 and shares ${host}'s concurrency group, so the two never run or push at once.
+# To run it by hand: Actions -> this workflow -> Run workflow (main).
+name: ${q(`${hostName} (kit games)`)}
+
+on:
+  schedule:
+    - cron: "${KIT_CRON}"     # every hour, ten minutes after ${host} (:47); waits for it if it is still running
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${group}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+${block}`;
+}
+
+/** A YAML-safe quoted string (names are validated too, KC-14). */
+const q = (s) => JSON.stringify(String(s));
+const up = (slug) => slug.toUpperCase().replace(/-/g, "_");
+// A game's budget is at most 20 min (tools/game-manifest.mjs BUDGET_MAX); a read started just before the end can take
+// ~4 min more (6 tries), and checkout, setup-node, npm ci and the fetch ~3: 20 + 4.1 + 3 ≤ 30 (#B-12 NK-15).
+export const RECORD_TIMEOUT_MIN = 30;
+export const SETUP_MIN = 3;
+// The hand-written jobs publish-kit waits for may take at most this long (record + publish), so a kit game's files are
+// checked within the publish check's JOB_WAIT_MS of its record job's start (#B-12 NK-11). kitGames refuses more.
+export const LEGACY_WAIT_MAX_MIN = JOB_WAIT_MS / 60000 - 5;
+export const PUBLISH_KIT_TIMEOUT_MIN = 10;
+/** The week-file name in the shell's [[ =~ ]] tests: the check's own rule (W004 … W999, W1000 … W9999; NK-20). */
+const WEEK_SH = "W([0-9]{3}|[1-9][0-9]{3})";
+
+/** The fetch of last run's files for ONE game (a public branch, read without a token; allow-listed names only). */
+/** Phase 1b: the VHP ruler's published data (public branch vhp-data, read without a token), for a vhpData game. Read-only:
+ *  the recorder loads and checks it with the ruler's own checks (kit/recorder/sources/vhp-ruler.ts); a failed fetch
+ *  leaves the folder empty, so the game's ruler rounds stay pending this run (never a guess). */
+const VHP_FETCH = `      - name: Take the ruler's data (vhp-data, read-only)
+        run: |
+          set -euo pipefail
+          git init -q "$RUNNER_TEMP/vhp-data"
+          if git -C "$RUNNER_TEMP/vhp-data" fetch -q --depth 1 "https://github.com/\${GITHUB_REPOSITORY}.git" vhp-data 2>/dev/null; then
+            git -C "$RUNNER_TEMP/vhp-data" checkout -q FETCH_HEAD
+          else
+            echo "::warning::vhp-data couldn't be fetched this run"
+          fi`;
+
+function fetchStep(branch, slug, dest = "prev", label = `Take ${slug}'s last files`) {
+  return `      - name: ${label}
+        run: |
+          set -euo pipefail
+          P="$RUNNER_TEMP/${dest}"; mkdir -p "$P/vault" "$P/inputs"
+          if git fetch -q --depth 1 "https://github.com/\${GITHUB_REPOSITORY}.git" ${branch} 2>/dev/null; then
+            { git ls-tree --name-only FETCH_HEAD:${slug} 2>/dev/null || true; } | while IFS= read -r f; do
+              if [[ "$f" =~ ^(board|alltime|${WEEK_SH})\\.json$ ]]; then git show "FETCH_HEAD:${slug}/$f" > "$P/$f"; fi
+              # KG parts v1: a parts week's folder (manifest, parts, p/ shards)
+              if [[ "$f" =~ ^${WEEK_SH}$ ]]; then
+                mkdir -p "$P/$f/p"
+                { git ls-tree -r --name-only "FETCH_HEAD:${slug}/$f" 2>/dev/null || true; } | while IFS= read -r x; do
+                  if [[ "$x" =~ ^(manifest|(wk|d[1-7]|r[0-9]{3,5})[.][0-9a-f]{12}|p/[0-9a-f]{1,2}[.][0-9a-f]{12})\\.json$ ]]; then git show "FETCH_HEAD:${slug}/$f/$x" > "$P/$f/$x"; fi
+                done
+                rmdir "$P/$f/p" 2>/dev/null || true
+              fi
+            done
+            { git ls-tree --name-only FETCH_HEAD:${slug}/vault 2>/dev/null || true; } | while IFS= read -r f; do
+              if [[ "$f" =~ ^((HOLD-|RELEASE-)?W(0|[1-9][0-9]{0,3}))\\.json$ ]]; then git show "FETCH_HEAD:${slug}/vault/$f" > "$P/vault/$f"; fi
+            done
+            { git ls-tree --name-only FETCH_HEAD:${slug}/inputs 2>/dev/null || true; } | while IFS= read -r f; do
+              if [[ "$f" =~ ^W(0|[1-9][0-9]{0,3})\\.json$ ]]; then git show "FETCH_HEAD:${slug}/inputs/$f" > "$P/inputs/$f"; fi
+            done
+          else
+            set +e; git ls-remote --exit-code --heads "https://github.com/\${GITHUB_REPOSITORY}.git" refs/heads/${branch} >/dev/null 2>&1; rc=$?; set -e
+            if [ "$rc" -ne 2 ]; then echo "::error::The ${branch} branch could not be fetched (git ls-remote exit $rc). Nothing recorded this run."; exit 1; fi
+            echo "No ${branch} branch yet."
+          fi
+          touch "$P/.fetched"`;
+}
+
+/**
+ * The jobs for the kit games on one branch. games: [{ slug, name, enabledVar, cfg }] (cfg = manifest.publishConfig).
+ * ONE record job per game, with its own timeout and its own artifact (KC-4, KC-13): a slow or broken game stops only
+ * itself, and can't write another game's files. The publish job takes each game's files only from that game's artifact.
+ */
+export function renderJobs({ branch, games, script, ruler = null }) {
+  if (!games.length) return `${BEGIN}\n${END}\n`;
+  const vhpGames = games.filter((g) => g.cfg?.vhpData);
+  if (vhpGames.length && typeof ruler !== "string") throw new Error("a ruler game (vhpData) needs vhp_ruler.py embedded in the publish job (G3)");
+  if (!DATA_BRANCHES.includes(branch)) throw new Error(`not a data branch: ${branch} (KC-23)`);
+  for (const g of games) {
+    if (!/^[a-z][a-z0-9-]{1,23}$/.test(g.slug)) throw new Error(`bad slug ${g.slug}`);
+    if (!/^[A-Z][A-Z0-9_]{1,63}$/.test(g.enabledVar)) throw new Error(`bad variable ${g.enabledVar}`);
+    if (!/^[A-Za-z0-9][A-Za-z0-9 ()&.,!+-]{1,39}$/.test(g.name)) throw new Error(`bad name ${JSON.stringify(g.name)} (KC-14)`);
+  }
+  const job = (g) => `record-${g.slug}`;
+  const recordJobs = games.map((g) => `  ${job(g)}:
+    name: ${q(`Record ${g.name} (kit)`)}
+    if: \${{ vars.${g.enabledVar} == 'true' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${RECORD_TIMEOUT_MIN}
+    permissions:
+      contents: read
+    outputs:
+      rc: \${{ steps.rec.outputs.rc }}
+    steps:
+      - uses: ${CHECKOUT}
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: ${NODE}
+        with:
+          node-version: 22
+      - run: npm ci --no-audit --no-fund --ignore-scripts
+${fetchStep(branch, g.slug)}${(g.published ?? []).map((o) => "\n" + fetchStep(branch, o, `published-${o}`, `Take ${o}'s published files (read-only)`)).join("")}${g.cfg.vhpData ? "\n" + VHP_FETCH : ""}
+      - name: Record
+        id: rec
+        # GitHub runs this as bash -e: the recorder's exit code is captured, never fatal, so the files it wrote (a HOLD
+        # included) are always uploaded and outputs.rc always carries 0, 1 or 2 (#B-12 NK-1).
+        run: |
+          set -uo pipefail
+          O="$RUNNER_TEMP/out"; rm -rf "$O"; mkdir -p "$O"
+          rc=0; npm run kit -- ${g.slug} || rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then rm -rf "$O"; mkdir -p "$O"; echo "rc $rc: a stop, nothing uploaded"; fi
+        env:
+          RPC: \${{ vars.RPC || 'https://koinos.armana.io' }}
+          RPC_CHECK: \${{ vars.RPC_CHECK || 'https://api.koinosblocks.com' }}
+          KIT_PREV: \${{ runner.temp }}/prev
+          KIT_OUT: \${{ runner.temp }}/out
+${(g.published ?? []).map((o) => `          KIT_PUBLISHED_${up(o)}: \${{ runner.temp }}/published-${o}\n`).join("")}${g.cfg.vhpData ? "          KIT_VHP_DATA: \${{ runner.temp }}/vhp-data\n" : ""}          # The owner's holds (GAME_KIT.md §3): weeks kept pending, and the one-off release of a held week ("<week>:<code>").
+          ${up(g.slug)}_HOLD_WEEKS: \${{ vars.${up(g.slug)}_HOLD_WEEKS }}
+          ${up(g.slug)}_RELEASE: \${{ vars.${up(g.slug)}_RELEASE }}
+          ${up(g.slug)}_RESET_FROM_WEEK: \${{ vars.${up(g.slug)}_RESET_FROM_WEEK }}
+      - uses: ${UP}
+        if: \${{ steps.rec.outputs.rc == '0' || steps.rec.outputs.rc == '1' }}
+        with:
+          name: kit-${branch}-${g.slug}
+          path: \${{ runner.temp }}/out/
+          retention-days: 1
+          if-no-files-found: ignore`).join("\n\n");
+  const downloads = games.map((g) => `      - uses: ${DOWN}
+        continue-on-error: true
+        with:
+          name: kit-${branch}-${g.slug}
+          path: \${{ runner.temp }}/incoming/${g.slug}`).join("\n");
+  const releaseEnv = games.map((g) => `          KIT_RELEASE_${up(g.slug)}: \${{ vars.${up(g.slug)}_RELEASE }}`).join("\n");
+  const kitGames = JSON.stringify(games.map((g) => g.cfg));
+  const ran = games.map((g) => `needs.${job(g)}.result == 'success'`).join(" || ");
+  const stopped = games.map((g) => `(needs.${job(g)}.result == 'success' && needs.${job(g)}.outputs.rc != '0' && needs.${job(g)}.outputs.rc != '1') || needs.${job(g)}.result == 'failure' || needs.${job(g)}.result == 'cancelled'`).join(" || ");
+  const owner = games.map((g) => `needs.${job(g)}.outputs.rc == '1'`).join(" || ");
+  return `${BEGIN}
+  # Games on the Shared Game Kit (.ai/standards/GAME_KIT.md): ${games.map((g) => g.name).join(", ")}. One record job per game
+  # (its own timeout and artifact); each runs only when its own variable is on. The publish job runs no repository code.
+${recordJobs}
+
+  publish-kit:
+    # This file and the hand-written host share one concurrency group, so the two publish jobs never push ${branch} at
+    # the same time.
+    needs: [${games.map(job).join(", ")}]
+    if: \${{ always() && github.ref == 'refs/heads/main' && (${ran}) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${PUBLISH_KIT_TIMEOUT_MIN}
+    permissions:
+      contents: write         # push the ${branch} branch (never main)
+    steps:
+${downloads}
+      - uses: ${NODE}
+        with:
+          node-version: 22
+${vhpGames.length ? RULER_STEP(ruler) : ""}      - name: Check and push the kit games' files (no repository code)
+        env:
+          KIT_CARDS_DIR: \${{ runner.temp }}/kit-cards
+          GH_TOKEN: \${{ github.token }}
+          IN: \${{ runner.temp }}/incoming
+          LIST: \${{ runner.temp }}/kit-publish.txt
+          KIT_GAMES: '${kitGames}'
+          CHECK_NOW_MS: ""      # the job's own clock, always (KC-29)
+          # The owner's releases, read by the check itself: a recorder run can't release its own hold (KC-3).
+${releaseEnv}
+        run: |
+          set -euo pipefail
+          if [ ! -d "$IN" ]; then echo "Nothing to publish."; exit 0; fi
+          remote="https://x-access-token:\${GH_TOKEN}@github.com/\${GITHUB_REPOSITORY}.git"
+          PUB=$(mktemp -d)
+          git init -q work && cd work
+          git config user.name "knode-games-bot"; git config user.email "knode-games-bot@users.noreply.github.com"
+          parent=""
+          if git fetch -q --depth 1 "$remote" ${branch} 2>/dev/null; then
+            parent=$(git rev-parse FETCH_HEAD); git read-tree FETCH_HEAD
+            for g in ${games.map((g) => g.slug).join(" ")}; do
+              mkdir -p "$PUB/$g/vault" "$PUB/$g/inputs"
+              { git ls-tree --name-only "$parent:$g" 2>/dev/null || true; } | while IFS= read -r f; do
+                if [[ "$f" =~ ^(board|alltime|${WEEK_SH})\\.json$ ]]; then git show "$parent:$g/$f" > "$PUB/$g/$f"; fi
+                if [[ "$f" =~ ^${WEEK_SH}$ ]]; then
+                  mkdir -p "$PUB/$g/$f/p"
+                  { git ls-tree -r --name-only "$parent:$g/$f" 2>/dev/null || true; } | while IFS= read -r x; do
+                    if [[ "$x" =~ ^(manifest|(wk|d[1-7]|r[0-9]{3,5})[.][0-9a-f]{12}|p/[0-9a-f]{1,2}[.][0-9a-f]{12})\\.json$ ]]; then git show "$parent:$g/$f/$x" > "$PUB/$g/$f/$x"; fi
+                  done
+                  rmdir "$PUB/$g/$f/p" 2>/dev/null || true
+                fi
+              done
+              { git ls-tree --name-only "$parent:$g/inputs" 2>/dev/null || true; } | while IFS= read -r f; do
+                if [[ "$f" =~ ^W(0|[1-9][0-9]{0,3})\\.json$ ]]; then git show "$parent:$g/inputs/$f" > "$PUB/$g/inputs/$f"; fi
+              done
+              { git ls-tree --name-only "$parent:$g/vault" 2>/dev/null || true; } | while IFS= read -r f; do
+                if [[ "$f" =~ ^((HOLD-|RELEASE-)?W(0|[1-9][0-9]{0,3}))\\.json$ ]]; then git show "$parent:$g/vault/$f" > "$PUB/$g/vault/$f"; fi
+              done
+            done
+          else
+            set +e; git ls-remote --exit-code --heads "$remote" refs/heads/${branch} >/dev/null 2>&1; rc=$?; set -e
+            if [ "$rc" -ne 2 ]; then echo "::error::The ${branch} branch could not be fetched (git ls-remote exit $rc): nothing published."; exit 1; fi
+            git read-tree --empty
+          fi
+${vhpGames.length ? `          # G3: rebuild every new ruler card with the embedded vhp_ruler.py (no repository code); the check holds the rest.
+          for g in ${vhpGames.map((g) => g.slug).join(" ")}; do
+            python3 -I -B "$RUNNER_TEMP/ruler-code/kit_cards.py" "$RUNNER_TEMP/vhp-data" "$IN/$g" "$PUB/$g" "$RUNNER_TEMP/kit-cards/$g.json" || echo "::error::$g: its ruler cards couldn't be rebuilt this run; its new files are held"
+          done
+` : ""}          # The kit's publish check, inline (kit/publish/check.inline.mjs byte for byte): it judges every file against the
+          # published copy and this job's own clock, and lists only what may be published.
+          node --input-type=module - "$IN" "$PUB" "$LIST" <<'${HEREDOC}'
+${ind(script, 10).replace(/\n$/, "")}
+          ${HEREDOC}
+          # KG parts v1: a parts week published again (pending or open) replaces its whole folder, so no stale part stays.
+          grep -oE '^[a-z][a-z0-9-]{1,23}/W([0-9]{3}|[1-9][0-9]{3})/' "$LIST" | sort -u | while IFS= read -r dir; do
+            git ls-files -z -- "$dir" | xargs -0 -r git update-index --force-remove --
+          done
+          while IFS= read -r name; do
+            [[ "$name" =~ ^[a-z][a-z0-9-]{1,23}/((board|alltime|${WEEK_SH})|vault/(HOLD-|RELEASE-)?W(0|[1-9][0-9]{0,3})|inputs/W(0|[1-9][0-9]{0,3})|${WEEK_SH}/(manifest|(wk|d[1-7]|r[0-9]{3,5})[.][0-9a-f]{12}|p/[0-9a-f]{1,2}[.][0-9a-f]{12}))\\.json$ ]] || { echo "::error::bad name from the check: $name"; exit 1; }
+            h=$(git hash-object -w "$IN/$name")
+            git update-index --add --cacheinfo "100644,$h,$name"
+          done < "$LIST"
+          tree=$(git write-tree)
+          if [ -n "$parent" ] && [ "$tree" = "$(git rev-parse "$parent^{tree}")" ]; then echo "No changes."
+          else
+            commit=$(git commit-tree "$tree" \${parent:+-p "$parent"} -m "kit: record $(date -u +%Y-%m-%dT%H:%MZ)")
+            git push -q "$remote" "$commit:refs/heads/${branch}"
+            echo "Published $(wc -l < "$LIST") file(s) to ${branch}."
+          fi
+          if [ -f "$LIST.alert" ]; then echo "::error::Some kit files were held (see above): the rest was published."; exit 1; fi
+
+  kit-alerts:
+    # Its own job, always run (#B-12 NK-16): the alerts fire even when publish-kit is skipped (every kit job failed,
+    # timed out or was cancelled). Failing this job is what emails the owner; the two cases say different things (KC-28).
+    needs: [${games.map(job).join(", ")}, publish-kit]
+    if: \${{ always() && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - name: Alert on a kit recorder that stopped
+        if: \${{ ${stopped} }}
+        run: |
+          echo "::error::A kit game's recorder stopped (or its job failed, timed out or was cancelled): nothing from that game was recorded this run. See its record job."
+          exit 1
+      - name: Alert on a kit recorder that needs the owner
+        if: \${{ ${owner} }}
+        run: |
+          echo "::error::A kit game's recorder raised an alert that needs the owner (see its record job). Its files were checked and published as usual."
+          exit 1
+      - name: Alert on a publish job that didn't finish
+        if: \${{ needs.publish-kit.result == 'failure' || needs.publish-kit.result == 'cancelled' }}
+        run: |
+          echo "::error::The kit's publish job failed or was cancelled (held files, or the push): see publish-kit."
+          exit 1
+${END}
+`;
+}
