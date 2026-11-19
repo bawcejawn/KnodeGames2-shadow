@@ -498,9 +498,87 @@
             "1Mpmf2ERhjYpX7CCiM11WERuM4j17uT1sr": "2090006338881"
           },
           "seal": "4951da1c2d715aecb12076e0b7296b2222400581b49edc1d6db743a06e74184c"
+        },
+        {
+          "height": 41204344,
+          "readAt": "2026-11-19T08:50:34.875Z",
+          "values": {
+            "1Mpmf2ERhjYpX7CCiM11WERuM4j17uT1sr": "2088778704086"
+          },
+          "seal": "3a564b40d982285de63f5b4def1da560da50e5b74eeb7846c2714b0e3d3d22a9"
+        },
+        {
+          "height": 41207062,
+          "readAt": "2026-11-19T11:10:29.784Z",
+          "values": {
+            "1Mpmf2ERhjYpX7CCiM11WERuM4j17uT1sr": "2086732630293"
+          },
+          "seal": "699f9dea5731c00622abfb6e8f05b6b77c0bbebdfa5950ee45cfd7dc6d2e4834"
+        },
+        {
+          "height": 41207832,
+          "readAt": "2026-11-19T11:50:32.023Z",
+          "values": {
+            "1Mpmf2ERhjYpX7CCiM11WERuM4j17uT1sr": "2085914194964"
+          },
+          "seal": "4788cd80d2e48607a97aa74cf94432bf68f4fce9848d1e08f83c113689299181"
+        },
+        {
+          "height": 41209124,
+          "readAt": "2026-11-19T12:56:04.915Z",
+          "values": {
+            "1Mpmf2ERhjYpX7CCiM11WERuM4j17uT1sr": "2084686537292"
+          },
+          "seal": "86192fb9fa389531f644afc36902359d97ea0d103d1c67b2eec92bbdba262633"
         }
       ],
-      "vhpSeal": "7f98e9f39163de3fc293cb986b7a69a2dbb6a31e1e70a2570a06509c07c1bf94"
+      "vhpSeal": "c0e6d7a241a6bb346eff70b9b031d66135aba0bce4886417a2ded8e69cf6f31a",
+      "result": {
+        "void": false,
+        "option": 0,
+        "value": "53",
+        "dataHash": "7451985078d2b2c1334103ecdaee13f38142a1ce576c629bdceaf564ecc6e4c5",
+        "resolvedAt": "2026-11-19T14:17:11.750Z",
+        "vhpCheck": {
+          "limit": 0.1,
+          "releaseHeight": 41152126,
+          "decidedHeight": 41210176,
+          "readings": [
+            41168283,
+            41170896,
+            41170961,
+            41171504,
+            41174166,
+            41176681,
+            41179334,
+            41179929,
+            41182217,
+            41184706,
+            41188997,
+            41191593,
+            41193877,
+            41196443,
+            41197948,
+            41199320,
+            41201928,
+            41204344,
+            41207062,
+            41207832,
+            41209124
+          ],
+          "readingsInWindow": 21,
+          "values": {
+            "1Mpmf2ERhjYpX7CCiM11WERuM4j17uT1sr": {
+              "release": "2097345118463",
+              "end": "2079342318519",
+              "change": "−0.86%",
+              "height": 41179334
+            }
+          }
+        }
+      },
+      "chainOutcome": 1,
+      "chainDataHash": "0x7451985078d2b2c1334103ecdaee13f38142a1ce576c629bdceaf564ecc6e4c5"
     },
     {
       "id": "W004-D2-4",
