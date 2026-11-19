@@ -10,7 +10,7 @@ const handoff = read("HANDOFF.md"), keys = read("docs/KEYS.md");
 const names = ["vault", "desk", "picks", "race", "sponsor"];
 
 test("contracts/hashes.json lists the five contracts with full sha256 values", () => {
-  assert.deepEqual(Object.keys(hashes).filter((k) => k !== "_").sort(), [...names].sort());
+  assert.deepEqual(Object.keys(hashes).filter((k) => k !== "_" && k !== "emergency").sort(), [...names].sort());
   for (const n of names) for (const k of ["live", "source"]) assert.match(hashes[n][k], /^[0-9a-f]{64}$/, `${n}.${k}`);
 });
 
@@ -22,11 +22,22 @@ test("every live hash and address is the one HANDOFF.md and docs/KEYS.md name", 
   }
 });
 
+test("the pinned emergency vault build matches deployment.json and docs/KEYS.md (Repo Lens #L-3 I-2)", () => {
+  const em = hashes.emergency?.vault;
+  assert.ok(em, "contracts/hashes.json has no emergency.vault entry");
+  assert.match(em.sha256, /^[0-9a-f]{64}$/);
+  assert.equal(JSON.parse(read("game-data/deployment.json")).safeWasmSha256, em.sha256);
+  assert.ok(keys.includes(em.sha256), "docs/KEYS.md lacks the emergency build hash");
+  assert.match(JSON.parse(read("contracts/vault/package.json")).scripts[em.script], /build-safe/);
+});
+
 test("a source hash that differs from live says why", () => {
   for (const n of names) if (hashes[n].source !== hashes[n].live) assert.ok((hashes[n].note ?? "").length > 10, `${n} needs a note`);
 });
 
-test("CI runs the contract build check", () => {
+test("CI runs the contract build check, with the ABI stdin shim (Repo Lens #L-3 I-1)", () => {
+  assert.match(read("tools/ci/contract-hashes.mjs"), /protoc-stdin-shim\.cjs/);
+  assert.match(read("tools/ci/protoc-stdin-shim.cjs"), /readSync\(0/);
   assert.match(read(".github/workflows/ci.yml"), /npm run test:hashes/);
   assert.match(JSON.parse(read("package.json")).scripts["test:hashes"], /tools\/ci\/contract-hashes\.mjs/);
 });

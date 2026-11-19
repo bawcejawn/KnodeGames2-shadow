@@ -22,7 +22,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, createPublicKey, verify } from "node:crypto";
 import type { Signer } from "koilib";
 import { showKoin, type Chain, type Call } from "./chain.ts";
 import { readSwitches, prizeOn, type Switches } from "./free-prizes.ts";
@@ -58,6 +58,12 @@ export type VaultCtx = {
   /** Reads any published file by spec ("<branch>:<path>" or a path on disk): HOLD files and boards (and results files
    *  when `readResults` isn't given). Missing and unreadable are different answers. Tests pass their own. */
   readFile?: (spec: string) => FileRead;
+  /** Audit AB-065: a second, independent node (RPC_CHECK). Every stake, posted row and week record that decides who gets
+   *  paid is read from both; when they differ the week is held and the owner told. */
+  check?: Chain;
+  /** The hourly bot on mainnet: without `check`, nothing is posted or finalized (a single node can't be trusted with
+   *  payouts). The game-post / game-finalize commands by hand don't set it: the owner decides there. */
+  requireCheck?: boolean;
   /** What the bot remembers between hourly runs (kept in game-data/bot-state.json, sealed by the operator key):
    *  when each results file was first read, refusals and alerts already sent. Without it (game-post by hand, tests
    *  that don't pass one), a file is posted on the first read and every alert is raised each time. */
@@ -66,7 +72,8 @@ export type VaultCtx = {
 /** A send's outcome: true, false, or { ok: false, error } with the chain's reason (the bot passes it on). */
 export type SendResult = boolean | { ok: boolean; error?: string };
 export type Send = (what: string, calls: Call[]) => Promise<SendResult>;
-export type FileRead = { state: "missing" } | { state: "ok"; data: any } | { state: "error"; error: string };
+/** `raw`: the file's exact text, for the seal check (audit AB-058). Readers that don't give it can't pass a seal check. */
+export type FileRead = { state: "missing" } | { state: "ok"; data: any; raw?: string } | { state: "error"; error: string };
 export type VaultMemo = {
   /** "<game>:<week>" → the results file's hash when first read, and when (chain time, ms). `changed`: it changed after. */
   seen?: Record<string, { hash: string; at: number; changed?: boolean }>;
@@ -192,7 +199,7 @@ export function readSpec(spec: string): FileRead {
   const m = spec.match(/^([A-Za-z0-9._\/-]+):(.+)$/);
   if (!m) {
     if (!fs.existsSync(spec)) return { state: "missing" };
-    try { return { state: "ok", data: JSON.parse(fs.readFileSync(spec, "utf8")) }; } catch (e: any) { return { state: "error", error: String(e?.message ?? e) }; }
+    try { const raw = fs.readFileSync(spec, "utf8"); return { state: "ok", data: JSON.parse(raw), raw }; } catch (e: any) { return { state: "error", error: String(e?.message ?? e) }; }
   }
   const [, branch, file] = m;
   if (!/^[A-Za-z0-9._-]+$/.test(branch) || file.includes("..") || file.startsWith("/")) return { state: "error", error: `"${spec}" is not <branch>:<path>` };
@@ -202,7 +209,35 @@ export function readSpec(spec: string): FileRead {
   if (!ls.stdout.trim()) return { state: "missing" };
   const show = spawnSync("git", ["show", `refs/remotes/origin/${branch}:${file}`], { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
   if (show.status !== 0) return { state: "error", error: `git show failed on ${spec}` };
-  try { return { state: "ok", data: JSON.parse(show.stdout) }; } catch (e: any) { return { state: "error", error: `${spec} is not valid JSON` }; }
+  try { return { state: "ok", data: JSON.parse(show.stdout), raw: show.stdout }; } catch (e: any) { return { state: "error", error: `${spec} is not valid JSON` }; }
+}
+
+// ── Audit AB-058 (Audit Bot, 16 Nov 2026): results files and boards sealed by the publish jobs ──
+// A results file and its board decide what the bot posts, and both sit on a data branch that anything able to push
+// there could rewrite. Each publish job seals what it publishes: an Ed25519 signature (RESULTS_SEAL_KEY, a secret only
+// the five publish jobs read) over SEAL_DOMAIN, the file's place ("<branch>:<path>") and its exact bytes, in
+// "<path>.seal" next to it: { "v": 1, "sig": "<base64>" }. With game-data/deployment.json "resultsSealKey" (the public
+// key, base64 SPKI DER) set, the hourly bot uses a results file, board or RELEASE file only when its seal is good.
+// docs/ops/RESULTS-SEAL.md has the owner's steps.
+export const SEAL_DOMAIN = "knodegames-results-v1";
+
+/** The bytes a seal covers: the domain, the file's place and its exact text. */
+export function sealMessage(spec: string, raw: string): Buffer {
+  return Buffer.concat([Buffer.from(`${SEAL_DOMAIN}\n${spec}\n`, "utf8"), Buffer.from(raw, "utf8")]);
+}
+
+/** "" when `f` (read from `spec`) carries a good seal for `publicKey`; otherwise why not. */
+export function sealProblem(readFile: (spec: string) => FileRead, spec: string, f: FileRead, publicKey: string): string {
+  if (f.state !== "ok" || typeof f.raw !== "string") return "its exact text can't be read for the seal check";
+  const s = readFile(`${spec}.seal`);
+  if (s.state === "missing") return "it carries no seal (no .seal file next to it): the publish job didn't write it";
+  if (s.state === "error") return `its seal can't be read (${s.error})`;
+  const sig = s.data?.sig;
+  if (s.data?.v !== 1 || typeof sig !== "string") return "its seal file is malformed";
+  try {
+    const key = createPublicKey({ key: Buffer.from(publicKey, "base64"), format: "der", type: "spki" });
+    return verify(null, sealMessage(spec, f.raw), key, Buffer.from(sig, "base64")) ? "" : "its seal doesn't match (the file was changed, or sealed by another key)";
+  } catch (e: any) { return `its seal can't be checked (${String(e?.message ?? e).slice(0, 120)})`; }
 }
 
 /** The results file for a week, or null (missing or unreadable). Kept for callers that only need the file. */
@@ -260,6 +295,91 @@ export function checkResults(r: any, game: number, week: number): string {
 export const STABLE_MS = 30 * 60_000;
 /** Wallets named in one alert, at most. */
 const LIST_MAX = 10;
+const list = (xs: string[]) => `${xs.slice(0, LIST_MAX).join(", ")}${xs.length > LIST_MAX ? " …" : ""}`;
+
+// ── Audit AB-060 / AB-065 (Audit Bot, 16 Nov 2026): what the chain will pay, checked against the file, on two nodes ──
+// The operator key decides who gets each game's bucket (post_results, post_prize_winners, seal_results). So the bot
+// that holds it must also check what ended up on chain: rows nobody published (a stolen key, or the owner key by a
+// set_operator round trip), a week sealed by a transaction the bot didn't send, or one node lying about stakes.
+
+/** Two independent nodes disagree about a fact that decides who gets paid. The week is held (nothing posted, sealed or
+ *  finalized) and the owner is told. */
+export class NodesDisagree extends Error {}
+
+/** The facts of a player's game week that decide pay. */
+const playerFacts = (p: any) => JSON.stringify([String(p?.week_stake ?? "0"), String(p?.active_stake ?? "0"),
+  num(p?.entry?.points), num(p?.entry?.prize_place), String(p?.entry?.peak_stake ?? ""), !!p?.entry?.voided]);
+/** The facts of a game week that decide pay. */
+const weekFacts = (gw: any) => JSON.stringify([!!gw?.closed, !!gw?.sealed, String(gw?.seal_time ?? "0"), !!gw?.finalized,
+  !!gw?.voided, num(gw?.eligible_players), num(gw?.max_points), num(gw?.first_n), num(gw?.second_n), String(gw?.bucket ?? "0"),
+  String(gw?.last_change_time ?? "0"), !!gw?.fin_started]);
+
+/** One read from RPC and, when the bot has one, the same read from RPC_CHECK; their pay facts must match. */
+async function readBoth(ctx: VaultCtx, method: string, args: any, facts: (x: any) => string, what: string): Promise<any> {
+  const a = await ctx.chain.read(method, args);
+  if (!ctx.check) return a;
+  const b = await ctx.check.read(method, args);
+  if (facts(a) !== facts(b)) throw new NodesDisagree(`the two nodes disagree about ${what} (RPC ${facts(a)}, RPC_CHECK ${facts(b)}). One node is wrong or lying: check both`);
+  return a;
+}
+const readPlayer = (ctx: VaultCtx, id: number, w: number, player: string) =>
+  readBoth(ctx, "get_game_player", { player, game: id, week: String(w) }, playerFacts, `${player} in game ${id} week ${w}`);
+const readWeek = async (ctx: VaultCtx, id: number, w: number) =>
+  (await readBoth(ctx, "get_game", { game: id, week: String(w) }, (x) => weekFacts(x?.week ?? {}), `game ${id} week ${w}`)).week ?? {};
+
+/** A file row the chain won't take: the wallet wasn't staked at the minimum that week, or is a prize winner. */
+const refusesRow = (p: any, min: bigint) => num(p?.entry?.prize_place) > 0 || big(p?.week_stake) < min || big(p?.week_stake) === 0n;
+
+/**
+ * What is on chain for a game week, against its results file (audit AB-060). `posted`: every row the chain takes should
+ * already be there (after the bot's posts, and for a sealed week); otherwise only rows nobody published count.
+ * `readP` reads one player (a single node: the check after this run's posts). Returns the differences (empty = the
+ * chain pays what the file says) and the file rows the chain refuses (not staked, or prize winners).
+ */
+export async function chainVsFile(gw: any, r: any, min: bigint, stakedGame: boolean, posted: boolean,
+  readP: (player: string) => Promise<any>): Promise<{ diffs: string[]; refused: string[] }> {
+  const diffs: string[] = [], refused: string[] = [], missing: string[] = [], wrong: string[] = [];
+  let onChain = 0;
+  for (const x of stakedGame ? r.rows ?? [] : []) {
+    const p = await readP(x.player);
+    const have = num(p?.entry?.points);
+    if (have === x.points) { onChain++; continue; }
+    if (have > 0) { onChain++; wrong.push(`${x.player} has ${have} on chain, the file says ${x.points}`); continue; }
+    if (refusesRow(p, min)) { refused.push(x.player); continue; }
+    if (posted) missing.push(x.player);
+  }
+  const foreign = num(gw.eligible_players) - onChain;
+  if (foreign > 0) diffs.push(`${foreign} result row(s) on chain are not in the results file (posted by a transaction the bot did not send)`);
+  if (wrong.length) diffs.push(`points differ from the file: ${list(wrong)}`);
+  if (missing.length) diffs.push(`${missing.length} staked wallet(s) in the file have no result on chain: ${list(missing)}`);
+  for (const [place, names, n] of [[1, r.first ?? [], num(gw.first_n)], [2, r.second ?? [], num(gw.second_n)]] as Array<[number, string[], number]>) {
+    if (n === 0) continue;
+    let mine = 0;
+    for (const a of names) if (num((await readP(a))?.entry?.prize_place) === place) mine++;
+    if (n > mine) diffs.push(`${n - mine} free-prize winner(s) for place ${place} on chain are not in the results file`);
+  }
+  return { diffs, refused };
+}
+
+/** A week's results file, as the results pass reads it. `why` is the reason it can't be used ("" = usable);
+ *  `unsealed` (audit AB-058): the file is there but its seal isn't good, so it may not be the publish job's. */
+function readWeekFile(ctx: VaultCtx, readFile: (spec: string) => FileRead, source: string, id: number, w: number, sealKey = ""): { r: any; why: string; unsealed?: boolean } {
+  if (ctx.readResults) { const r = ctx.readResults(source, w); return { r, why: r ? checkResults(r, id, w) : "no file yet" }; }
+  const spec = joinSpec(source, `W${w}.json`);
+  const f = readFile(spec);
+  if (f.state !== "ok") return { r: null, why: f.state === "missing" ? "no file yet" : `unreadable (${f.error})` };
+  if (sealKey) { const bad = sealProblem(readFile, spec, f, sealKey); if (bad) return { r: null, why: `the results file ${spec} isn't sealed by the publish job: ${bad}`, unsealed: true }; }
+  return { r: f.data, why: checkResults(f.data, id, w) };
+}
+
+/** The public key results files must be sealed with (deployment.json "resultsSealKey"), or "" (no seal required).
+ *  Tests and the rehearsal that pass only `readResults` never need one; game-post by hand from a folder the owner names
+ *  doesn't either (the owner decides there). */
+const sealKeyFor = (ctx: VaultCtx, legacy: boolean, only?: { source?: string }) =>
+  legacy || only?.source ? "" : String(ctx.deployment?.resultsSealKey ?? "");
+
+/** Without RPC_CHECK on mainnet the hourly bot neither posts nor finalizes (audit AB-065, earlier QA5 M-4). */
+const ONE_NODE = "RPC_CHECK is off, missing, or the same host as RPC, so the bot has only one node. On mainnet it neither posts nor finalizes other games' results with one node (audit AB-065): one lying node could cut honest stakers out. Set RPC_CHECK to a second, independent node (GitHub → Settings → Secrets and variables → Actions → Variables), or post by hand: npm run bot -- game-post <game> <week> (dry run first).";
 
 /**
  * Posts other games' finished weeks: points for staked players, prize winners, then the seal. Only the week that just
@@ -293,6 +413,7 @@ export async function vaultResultsPass(ctx: VaultCtx, send: Send, only?: { game:
   // them (and only them). The hourly bot and game-post pass neither, so they read everything from git (readSpec).
   const legacy = !!ctx.readResults && !ctx.readFile;
   const readFile = ctx.readFile ?? (legacy ? (): FileRead => ({ state: "missing" }) : readSpec);
+  const sealKey = sealKeyFor(ctx, legacy, only);
   const memo = only ? undefined : ctx.memo;
   if (memo) pruneMemo(memo, k.week);
   // An alert once per key with a memo (the hourly bot); every time without one.
@@ -300,17 +421,20 @@ export async function vaultResultsPass(ctx: VaultCtx, send: Send, only?: { game:
     if (memo) { memo.alerted ??= []; if (memo.alerted.includes(key)) { log(ctx, `  (already reported) ${text}`); return; } memo.alerted.push(key); }
     ctx.problems.push(text);
   };
+  if (!only && ctx.requireCheck && !ctx.check) { alert(`one-node:${k.week}`, ONE_NODE); return; }
   // The owner's free-prize switches (D-082), read once per run. Unreadable → free winners wait (fail closed).
   let switches: { s: Switches | null } | { error: string } | undefined;
   const sw = () => (switches ??= (() => { try { return { s: (ctx.readPrizeSwitches ?? (() => readSwitches().s))() }; } catch (e: any) { return { error: String(e?.message ?? e) }; } })());
   for (const g of view.games) {
+    // Audit AB-065: two nodes that disagree hold this game's week (nothing posted or sealed); the others go on.
+    try {
     const id = num(g.id);
     if (only && only.game !== id) continue;
     const w = only ? only.week : k.week - 1;
     if (!vaultHandles(id, k.c, w)) { if (only) throw new Error(`Week ${w} of the question game is paid by the old rules (settle and claim), not from a results file.`); continue; }
     const name = g.name ?? `game ${id}`;
     if (w < 0) { if (only) throw new Error(`${name} has no results for week ${w}.`); continue; }
-    const gw = (await ctx.chain.read("get_game", { game: id, week: String(w) })).week ?? {};
+    const gw = await readWeek(ctx, id, w);
     // Fix-check VN-3: the contract's rule. A game restarted after a gap keeps the weeks it earned (closed with it).
     if (!earnedWeek(g, w, gw)) { if (only) throw new Error(`${name} has no results for week ${w}.`); continue; }
     if (isTestWeek(ctx.deployment, w)) {
@@ -322,7 +446,20 @@ export async function vaultResultsPass(ctx: VaultCtx, send: Send, only?: { game:
     if (!source) { log(ctx, `  ${name}: no results source in deployment.json (vaultGames.${id}.results)`); continue; }
     if (k.time < k.weekEnd(w)) { if (only) throw new Error(`Week ${w} of ${name} is not over yet.`); continue; }
     const due = k.resultsDue(w);
-    if (gw.sealed || gw.finalized || gw.voided) { if (only) log(ctx, `  ${name} week ${w} is already ${gw.finalized ? "final" : gw.voided ? "voided" : "sealed"}.`); continue; }
+    if (gw.finalized || gw.voided) { if (only) log(ctx, `  ${name} week ${w} is already ${gw.finalized ? "final" : "voided"}.`); continue; }
+    // Audit AB-060: a sealed week is checked against its results file every hour until it is final, whoever sealed it.
+    // A row nobody published, a missing staked row or a seal with no file alerts the owner while the correction window
+    // is open; vaultFinalizePass checks the same before it finalizes.
+    if (gw.sealed) {
+      const ends = utc(num(gw.seal_time) + 2 * k.closeDelay);
+      if (num(gw.last_change_time) > 0) { log(ctx, `  ${name} week ${w}: sealed and corrected by the owner (the hourly alert reports it): not compared with the file`); continue; }
+      const sf = readWeekFile(ctx, readFile, source, id, w, sealKey);
+      if (sf.why) { alert(`${id}:${w}:sealed-nofile`, `${name} week ${w} is SEALED on chain, but its results file can't be used (${sf.why}), so nobody can check who it will pay. The bot won't finalize it. Check the rows on chain (npm run bot -- status) and correct them (game-correct) or void the week (game-void) before ${ends}.`); continue; }
+      const v = await chainVsFile(gw, sf.r, k.minStakeFor(w), g.staked || big(gw.bucket) > 0n, true, (a) => readPlayer(ctx, id, w, a));
+      if (v.diffs.length) alert(`${id}:${w}:sealed-diff:${hashOf(v.diffs).slice(0, 12)}`, `${name} week ${w} is SEALED on chain with results that differ from its published file: ${v.diffs.join("; ")}. The bot won't finalize it. If you did not do this, the operator or owner key may be compromised: correct it (npm run bot -- game-correct ${id} ${w} <wallet> <points> --send) or void it (game-void) before ${ends}.`);
+      else log(ctx, `  ${name} week ${w}: sealed; the chain matches the results file`);
+      continue;
+    }
     if (k.time >= due) { if (only) throw new Error(`Week ${w} of ${name} is past its results deadline (${utc(due)}).`); continue; }
     const key = `${id}:${w}`;
     const hoursLeft = (due - k.time) / HOUR_MS;
@@ -340,21 +477,21 @@ export async function vaultResultsPass(ctx: VaultCtx, send: Send, only?: { game:
     // next to it (Last Node publishes it when LASTNODE_RELEASE_WEEKS names the week). Unreadable RELEASE → still held.
     const h = readFile(joinSpec(source, `HOLD-W${w}.json`));
     if (h.state === "ok") {
-      const rel = readFile(joinSpec(source, `RELEASE-W${w}.json`));
+      const relSpec = joinSpec(source, `RELEASE-W${w}.json`);
+      const rel = readFile(relSpec);
       const reason = h.data?.reason ?? h.data?.why;
       if (rel.state === "error") { hold("release-unreadable", `the game published HOLD-W${w}.json, and RELEASE-W${w}.json can't be read (${rel.error})`); continue; }
       if (rel.state === "missing") { hold("hold-file", `the game published HOLD-W${w}.json${reason ? ` (${String(reason).slice(0, 120)})` : ""}: it pays nothing until its recorder releases the week (RELEASE-W${w}.json)`); continue; }
+      // Audit AB-058: only a RELEASE the publish job sealed lifts a hold.
+      const relBad = sealKey ? sealProblem(readFile, relSpec, rel, sealKey) : "";
+      if (relBad) { hold("release-unsealed", `the game published HOLD-W${w}.json, and RELEASE-W${w}.json isn't sealed by the publish job (${relBad}), so the hold stays`); continue; }
       log(ctx, `  ${name} week ${w}: HOLD-W${w}.json was released (RELEASE-W${w}.json): checking the results as usual`);
     }
     if (h.state === "error") { hold("hold-unreadable", `HOLD-W${w}.json can't be read (${h.error}), so the bot can't tell whether the game is holding this week`); continue; }
 
-    // 2. The results file: final, well formed, and stable across runs.
-    let r: any = null, why = "";
-    if (ctx.readResults) { r = ctx.readResults(source, w); why = r ? checkResults(r, id, w) : "no file yet"; }
-    else {
-      const f = readFile(joinSpec(source, `W${w}.json`));
-      if (f.state === "ok") { r = f.data; why = checkResults(r, id, w); } else why = f.state === "missing" ? "no file yet" : `unreadable (${f.error})`;
-    }
+    // 2. The results file: final, well formed, sealed by the publish job (AB-058) and stable across runs.
+    const { r, why, unsealed } = readWeekFile(ctx, readFile, source, id, w, sealKey);
+    if (unsealed) { hold("unsealed", `${why}. If you didn't change it, someone else wrote it: check who pushed to the data branch`); continue; }
     if (why) {
       if (only) throw new Error(`Results for ${name} week ${w} can't be used: ${why}.`);
       log(ctx, `  ${name} week ${w}: results not ready (${why}); due ${utc(due)}`);
@@ -393,6 +530,9 @@ export async function vaultResultsPass(ctx: VaultCtx, send: Send, only?: { game:
       const bspec = boardSpec(source, cfg[String(id)]?.board);
       const b = readFile(bspec);
       if (b.state !== "ok") { hold("board", `its board ${bspec} is ${b.state === "missing" ? "missing" : `unreadable (${b.error})`}, so the staked list can't be checked`); continue; }
+      // Audit AB-058: the board is the reference for the staked list, so it must be the publish job's too.
+      const boardBad = sealKey ? sealProblem(readFile, bspec, b, sealKey) : "";
+      if (boardBad) { hold("board-unsealed", `its board ${bspec} isn't sealed by the publish job (${boardBad}), so the staked list can't be trusted. If you didn't change it, someone else wrote it: check who pushed to the data branch`); continue; }
       const lw = b.data?.lastWeek;
       if (!lw || num(lw.week) !== w || !Array.isArray(lw.rows)) { hold("board", `its board ${bspec} has no lastWeek for week ${w} (it shows week ${lw?.week ?? "none"}), so the staked list can't be checked`); continue; }
       const filePts = new Map<string, number>((r.rows ?? []).map((x: any) => [x.player, x.points]));
@@ -414,7 +554,7 @@ export async function vaultResultsPass(ctx: VaultCtx, send: Send, only?: { game:
       const missing: string[] = [];
       for (const a of scored) {
         if (filePts.has(a)) continue;
-        const p = await ctx.chain.read("get_game_player", { player: a, game: id, week: String(w) });
+        const p = await readPlayer(ctx, id, w, a);
         if (big(p.week_stake) >= stakedFloor(min)) missing.push(a);
       }
       if (missing.length) { hold("staked-list", `${missing.length} wallet(s) staked in the game that week, with points on its board, are not in the results file: ${missing.slice(0, LIST_MAX).join(", ")}${missing.length > LIST_MAX ? " …" : ""}`); continue; }
@@ -433,24 +573,39 @@ export async function vaultResultsPass(ctx: VaultCtx, send: Send, only?: { game:
       if (order) { hold("order", `the results file's points don't follow the board's places: ${order}`); continue; }
     }
 
+    // Audit AB-060: before anything is sent, the chain may hold only rows and winners from this file. A row or winner
+    // nobody published (a stolen operator key, or the owner key by a set_operator round trip), or points that differ
+    // from the file, hold the week: nothing is posted or sealed until the owner corrects it.
+    // The owner already corrected this (unsealed) week: the bot doesn't post over the owner's change.
+    if (num(gw.last_change_time) > 0) { hold("owner-corrected", `the owner corrected this week's results on chain (${utc(num(gw.last_change_time))}), so the bot leaves it to you. When it is right, seal it by hand: npm run bot -- game-seal ${id} ${w} --send`); continue; }
+    const pre = await chainVsFile(gw, r, min, stakedGame, false, (a) => readPlayer(ctx, id, w, a));
+    if (pre.diffs.length) { hold("chain-differs", `the chain already differs from the results file: ${pre.diffs.join("; ")}. If you did not do this, the operator or owner key may be compromised. Remove a wrong row with npm run bot -- game-correct ${id} ${w} <wallet> 0 --send (a prize winner: game-unprize)`); continue; }
+
     // Points for staked players: only rows the chain would take, and only once.
     const rows: Array<{ player: string; points: number }> = [];
-    let skipped = 0;
+    const left: string[] = [];
     if (stakedGame) {
       for (const x of r.rows ?? []) {
-        const p = await ctx.chain.read("get_game_player", { player: x.player, game: id, week: String(w) });
-        const posted = num(p.entry?.points);
-        if (posted === x.points) continue;
-        if (posted > 0) { ctx.problems.push(`${name} week ${w}: ${x.player} already has ${posted} points on chain; the results file says ${x.points}. If the file is right, correct it: npm run bot -- game-correct ${id} ${w} ${x.player} ${x.points} --send`); continue; }
-        if (num(p.entry?.prize_place) > 0) { skipped++; continue; }
-        if (big(p.week_stake) < min || big(p.week_stake) === 0n) { skipped++; continue; }
+        const p = await readPlayer(ctx, id, w, x.player);
+        if (num(p.entry?.points) === x.points) continue;
+        if (refusesRow(p, min)) { left.push(x.player); continue; }
         rows.push({ player: x.player, points: x.points });
       }
     } else if ((r.rows ?? []).length) log(ctx, `  ${name} has no stake bucket: its ${r.rows.length} row(s) of points are not sent`);
+    // Audit AB-065: a file row the chain refuses is never dropped in silence. With a second node that agrees, it is left
+    // out and the owner is told once; with one node (a node that lies could call honest stakers unstaked) the week holds.
+    if (left.length && !only) {
+      const why = `${left.length} row(s) of the results file are not staked in the game that week on chain (or are already prize winners): ${list(left)}`;
+      if (!ctx.check) { hold("one-node-left-out", `${why}, and there is no second node (RPC_CHECK) to confirm it, so the bot won't post the week without them. If the chain is right, post by hand: npm run bot -- game-post ${id} ${w} (dry run first)`); continue; }
+      alert(`${key}:left-out:${hashOf(left).slice(0, 12)}`, `${name} week ${w}: ${why}. Both nodes agree, so they are left out. If one of them should be paid, correct it before the week is final: npm run bot -- game-correct ${id} ${w} <wallet> <points> --send.`);
+    }
     // Prize winners, on the last week of the game's season only, each a free player there.
     const places: Array<{ place: number; players: string[] }> = [];
     const prizeWeek = g.free_prize && (gw.closed ? big(gw.prize) > 0n : seasonEnds(g, w));
     let holdSeal = false;
+    // Repo Lens L1-3: the file's own winners, kept for the check before the seal. The switch rules below may empty the
+    // lists (nothing new is posted), but winners an earlier run posted are still the file's, not foreign.
+    const asFiled = { ...r, first: [...(r.first ?? [])], second: [...(r.second ?? [])] };
     if (prizeWeek && ((r.first ?? []).length || (r.second ?? []).length)) {
       const x = sw();
       if ("error" in x) {
@@ -470,7 +625,7 @@ export async function vaultResultsPass(ctx: VaultCtx, send: Send, only?: { game:
       for (const [place, list] of [[1, r.first ?? []], [2, r.second ?? []]] as Array<[number, string[]]>) {
         const fresh: string[] = [];
         for (const a of list) {
-          const p = await ctx.chain.read("get_game_player", { player: a, game: id, week: String(w) });
+          const p = await readPlayer(ctx, id, w, a);
           if (num(p.entry?.prize_place) === place) continue;
           if (num(p.entry?.prize_place) > 0 || num(p.entry?.points) > 0) { ctx.problems.push(`${name} week ${w}: ${a} already has another result on chain; not posted as a prize winner.`); continue; }
           const peak = p.entry ? big(p.entry.peak_stake) : big(p.active_stake);
@@ -484,7 +639,7 @@ export async function vaultResultsPass(ctx: VaultCtx, send: Send, only?: { game:
     } else if ((r.first ?? []).length || (r.second ?? []).length) {
       if (g.free_prize) log(ctx, `  ${name} week ${w} is not the last week of its prize season: prize winners are posted with the season's last week`);
     }
-    if (skipped) log(ctx, `  ${name} week ${w}: ${skipped} row(s) left out (not staked in the game that week, or already a prize winner)`);
+    if (left.length) log(ctx, `  ${name} week ${w}: ${left.length} row(s) left out (not staked in the game that week, or already a prize winner)`);
     // 4. Sends. A refusal stops this game's week (no seal), is reported with the chain's reason, and is not retried
     //    while the file stays the same (I-052).
     const go = async (what: string, call: string, calls: Call[]): Promise<boolean> => {
@@ -512,7 +667,35 @@ export async function vaultResultsPass(ctx: VaultCtx, send: Send, only?: { game:
       }
     }
     if (ok && holdSeal) log(ctx, `  ${name} week ${w}: seal held (free-prize switches unreadable)`);
+    // Audit AB-060: before the seal, the chain must pay exactly what the file says (read again after this run's posts).
+    // The primary node decides; a second node that hasn't caught up with posts sent just now waits for the next run.
+    // A dry run sends nothing, so there is nothing new on chain to check.
+    if (ok && !holdSeal && !ctx.dryRun) {
+      const sentNow = rows.length > 0 || places.length > 0;
+      const now1 = (await ctx.chain.read("get_game", { game: id, week: String(w) })).week ?? {};
+      const v1 = await chainVsFile(now1, asFiled, min, stakedGame, true, async (a) => ctx.chain.read("get_game_player", { player: a, game: id, week: String(w) }));
+      if (v1.diffs.length) { hold("after-post", `after the bot's posts the chain still differs from the results file: ${v1.diffs.join("; ")}`); continue; }
+      if (ctx.check) {
+        const chk = ctx.check;
+        const now2 = (await chk.read("get_game", { game: id, week: String(w) })).week ?? {};
+        const v2 = await chainVsFile(now2, asFiled, min, stakedGame, true, async (a) => chk.read("get_game_player", { player: a, game: id, week: String(w) }));
+        if (v2.diffs.length && sentNow) {
+          log(ctx, `  ${name} week ${w}: the second node hasn't caught up with this run's posts yet; sealing on the next run`);
+          // Repo Lens L1-1: the next hourly run may be past the deadline (dropped runs too): say so now, never in silence.
+          if (due - k.time < 2 * HOUR_MS) alert(`${key}:seal-lag`, `${name} week ${w}: points posted, but the second node (RPC_CHECK) doesn't show them yet and the results are due ${utc(due)}, so the next hourly run may be too late to seal. Check both nodes show the rows (npm run bot -- status), then seal by hand: npm run bot -- game-seal ${id} ${w} --send`);
+          continue;
+        }
+        if (v2.diffs.length) { hold("nodes-disagree", `the second node (RPC_CHECK) differs from the results file while the first matches: ${v2.diffs.join("; ")}. One node is wrong or lying: check both`); continue; }
+      }
+    }
     if (ok && !holdSeal) await go(`${name} week ${w}: seal the results (the owner can correct them for 24 h)`, "seal_results", [{ method: "seal_results", args: { game: id, week: String(w) } }]);
+    } catch (e) {
+      if (!(e instanceof NodesDisagree)) throw e;
+      const what = `${g.name ?? `game ${num(g.id)}`} week ${only ? only.week : k.week - 1}`;
+      if (only) throw new Error(`${what} is held: ${e.message}`);
+      log(ctx, `  ${what}: HELD (${e.message})`);
+      alert(`${num(g.id)}:${k.week - 1}:nodes-disagree:${hashOf(e.message).slice(0, 12)}`, `${what}: held, nothing posted, sealed or finalized: ${e.message}.`);
+    }
   }
 }
 
@@ -568,6 +751,34 @@ export async function vaultFinalizePass(ctx: VaultCtx, send: Send) {
   if (!view) return;
   const k = await clock(ctx.chain);
   if (k.raw?.safe_mode) { log(ctx, "  withdrawals-only build: finalizing waits for the normal build"); return; }   // V2-2
+  const memo = ctx.memo;
+  const alert = (key: string, text: string) => {
+    if (memo) { memo.alerted ??= []; if (memo.alerted.includes(key)) { log(ctx, `  (already reported) ${text}`); return; } memo.alerted.push(key); }
+    ctx.problems.push(text);
+  };
+  if (ctx.requireCheck && !ctx.check) { alert(`one-node-final:${k.week}`, ONE_NODE); return; }
+  const cfg = ctx.deployment?.vaultGames ?? {};
+  const legacy = !!ctx.readResults && !ctx.readFile;
+  const readFile = ctx.readFile ?? (legacy ? (): FileRead => ({ state: "missing" }) : readSpec);
+  const sealKey = sealKeyFor(ctx, legacy);
+  /** Audit AB-060: a sealed week is finalized only if the chain pays what its results file says (on both nodes).
+   *  A week the owner corrected (last_change_time) is the owner's call: the hourly alert already reported it. */
+  const verified = async (g: any, w: number, gw: any): Promise<boolean> => {
+    if (!gw.sealed || gw.voided || gw.fin_started || num(gw.last_change_time) > 0) return true;
+    const id = num(g.id), name = g.name ?? `game ${id}`;
+    const stop = (kind: string, why: string) => { alert(`${id}:${w}:final-${kind}`, `${name} week ${w}: NOT finalized: ${why}. Correct it (npm run bot -- game-correct ${id} ${w} <wallet> <points> --send) or void it (game-void) while the window is open; if the chain is right, finalize it by hand: npm run bot -- game-finalize ${id} ${w}.`); return false; };
+    const source = cfg[String(id)]?.results;
+    if (!source) return stop("nosource", `deployment.json has no results source for the game (vaultGames.${id}.results), so the sealed rows can't be checked`);
+    const f = readWeekFile(ctx, readFile, source, id, w, sealKey);
+    if (f.why) return stop("nofile", `its results file can't be used (${f.why}), so the sealed rows can't be checked`);
+    try {
+      const v = await chainVsFile(gw, f.r, k.minStakeFor(w), g.staked || big(gw.bucket) > 0n, true, (a) => readPlayer(ctx, id, w, a));
+      return v.diffs.length ? stop(`diff:${hashOf(v.diffs).slice(0, 12)}`, `the sealed results differ from the published file: ${v.diffs.join("; ")}`) : true;
+    } catch (e) {
+      if (e instanceof NodesDisagree) return stop("nodes", e.message);
+      throw e;
+    }
+  };
   for (const g of view.games) {
     const id = num(g.id);
     // Every closed week of the game (a closed game week is one it earned, also before a restart: fix-check VN-3).
@@ -575,12 +786,16 @@ export async function vaultFinalizePass(ctx: VaultCtx, send: Send) {
     for (let w = Math.max(0, k.weeksClosed - 12); w < k.weeksClosed; w++) {
       if (!vaultHandles(id, k.c, w)) continue;
       for (let page = 0; page < 20; page++) {
-        const gw = (await ctx.chain.read("get_game", { game: id, week: String(w) })).week ?? {};
-        if (!gw.closed || gw.finalized) break;
-        const ready = gw.voided || gw.fin_started || (gw.sealed
-          ? k.time >= num(gw.seal_time) + 2 * k.closeDelay && k.time >= num(gw.last_change_time) + k.closeDelay
+        const isReady = (x: any) => x.voided || x.fin_started || (x.sealed
+          ? k.time >= num(x.seal_time) + 2 * k.closeDelay && k.time >= num(x.last_change_time) + k.closeDelay
           : k.time >= k.resultsDue(w));
-        if (!ready) break;
+        // Repo Lens L1-2: the primary node decides whether there is anything to do; only then are both nodes compared
+        // (a week sealed seconds ago, or one that isn't due, is not a disagreement).
+        const gw1 = (await ctx.chain.read("get_game", { game: id, week: String(w) })).week ?? {};
+        if (!gw1.closed || gw1.finalized || !isReady(gw1)) break;
+        const gw = await readWeek(ctx, id, w).catch((e) => { if (e instanceof NodesDisagree) { alert(`${id}:${w}:final-nodes:${hashOf(e.message).slice(0, 12)}`, `${g.name ?? `game ${id}`} week ${w}: NOT finalized: ${e.message}.`); return null; } throw e; });
+        if (!gw || !gw.closed || gw.finalized || !isReady(gw)) break;
+        if (page === 0 && !(await verified(g, w, gw))) break;
         const what = gw.sealed && !gw.voided ? "find the winners" : "no results: roll the week over";
         // Repo Lens VB-2: a send's result is an object on failure ({ ok: false }), so it must go through sent().
         if (!sent(await send(`${g.name ?? `game ${id}`} week ${w}: finalize (${what})`, [{ method: "finalize_game_week", args: { game: id, week: String(w) } }])).ok || ctx.dryRun) break;

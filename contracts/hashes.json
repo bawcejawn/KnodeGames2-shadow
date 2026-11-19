@@ -1,5 +1,5 @@
 {
-  "_": "sha256 of each contract's release build (build/release/contract.wasm). live = the code on chain now. source = what this folder builds today. They differ only while an upgrade is planned. tools/ci/contract-hashes.mjs fails if a build is not `source`.",
+  "_": "sha256 of each contract's release build (build/release/contract.wasm). live = the code on chain now. source = what this folder builds today. They differ only while an upgrade is planned. emergency = pinned emergency builds of the same source (not on chain). tools/ci/contract-hashes.mjs fails if a build is not `source`.",
   "vault": {
     "address": "1Mpmf2ERhjYpX7CCiM11WERuM4j17uT1sr",
     "live": "11043e1fde1d8d7dbac75e9e5e788d058a7116b0dab6149fc09ecdc7b1c4258b",
@@ -25,5 +25,13 @@
     "address": "1ByDDSBUzy5zkRceELc54Jh8i41yNRoKt8",
     "live": "b84e1add3ffa14a7d1933d5ce5a4ad33caa4bca887a489f87f710b3c121c83a6",
     "source": "b84e1add3ffa14a7d1933d5ce5a4ad33caa4bca887a489f87f710b3c121c83a6"
+  },
+  "emergency": {
+    "vault": {
+      "script": "build:safe",
+      "file": "build/safe/contract.wasm",
+      "sha256": "04c27c1acde570b97a430dea403d41aab47e083ae30115353ee5f89932dad0bb",
+      "note": "The withdrawals-only vault build (SAFE_MODE = true), pinned as safeWasmSha256 in game-data/deployment.json and in docs/KEYS.md."
+    }
   }
 }

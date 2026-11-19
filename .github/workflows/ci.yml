@@ -25,5 +25,14 @@ jobs:
       - run: npm test
       - name: Contract builds match contracts/hashes.json (no upload)
         run: npm run test:hashes
+      # The bot's vault checks (audit AB-058, AB-060, AB-065) run against the vault's TEST build: the same contract with a
+      # simulated token ledger inside. It is built here and never uploaded. stdin is empty because the ABI step can fail
+      # at random reading it (EAGAIN). Its last step rebuilds the release wasm, so the hash checked above is unchanged.
+      - name: Vault test build (simulated ledger, never uploaded)
+        working-directory: contracts/vault
+        run: |
+          for i in 1 2 3; do npm run build:sim --workspaces=false < /dev/null && exit 0; echo "try $i failed"; done; exit 1
+      - name: Bot vault checks on the simulated chain
+        run: npm run test:vault
       - name: Dependency audit
         run: npm audit --audit-level=high
