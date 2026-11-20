@@ -80,7 +80,34 @@
       },
       "hashRule": 2,
       "paramsHash": "2abdf4e1773b6a7f1ab7f6c3a9abaea1e50042a64f2eb22425ea16fd15e37152",
-      "chainId": 138
+      "chainId": 138,
+      "vhpReadings": [
+        {
+          "height": 41224411,
+          "readAt": "2026-11-20T02:00:38.833Z",
+          "values": {
+            "14f34kUNZugf2DK4hPJGy4AkmBM7Y4pvVu": "115586324606653"
+          },
+          "seal": "2a8312a7e0c25b1b0bbe4d6a633ec595563363fad30450d17473505c6cb39e41"
+        },
+        {
+          "height": 41225713,
+          "readAt": "2026-11-20T03:06:01.638Z",
+          "values": {
+            "14f34kUNZugf2DK4hPJGy4AkmBM7Y4pvVu": "115533122847606"
+          },
+          "seal": "cb430202f2ef5d3d6d749d07891ecb5ac12cdc0d8bde86c97f0b1951ac2a6c8e"
+        },
+        {
+          "height": 41227213,
+          "readAt": "2026-11-20T04:20:58.855Z",
+          "values": {
+            "14f34kUNZugf2DK4hPJGy4AkmBM7Y4pvVu": "115475009853265"
+          },
+          "seal": "7cdcc7dd0f6f43270b7c6be2575ff246fd63bf4e39a4ddfbb6dbb069b7e2aa13"
+        }
+      ],
+      "vhpSeal": "7a1db2ddb87741f38f431b1234e4807ca413efac6c54b048034d0764260598bf"
     },
     {
       "id": "W004-D4-2",
@@ -142,7 +169,34 @@
       },
       "hashRule": 2,
       "paramsHash": "e909308970bfed87ba7c47b387c3f6d6ecf81453d68ef0031b9585d5a727a767",
-      "chainId": 139
+      "chainId": 139,
+      "vhpReadings": [
+        {
+          "height": 41224411,
+          "readAt": "2026-11-20T02:00:38.833Z",
+          "values": {
+            "network": "2273998370164593"
+          },
+          "seal": "24e063c096c6d136cbfd627952a5f9b72ed54293b9af6da99d96c53fbde88693"
+        },
+        {
+          "height": 41225713,
+          "readAt": "2026-11-20T03:06:01.638Z",
+          "values": {
+            "network": "2273465943317288"
+          },
+          "seal": "558df777c58775513e3701bb989676e6be405513fa50934b381f3491d57a875a"
+        },
+        {
+          "height": 41227213,
+          "readAt": "2026-11-20T04:20:58.855Z",
+          "values": {
+            "network": "2283150607093449"
+          },
+          "seal": "11386aa5e3613dd95356ca6dd174db881d4b60b22aafa80f7bdb42f0ff17ffc2"
+        }
+      ],
+      "vhpSeal": "42f507aeb9f3bcef8fe2ef7e216ca855ce820789534825b9379c383ee1575ba3"
     },
     {
       "id": "W004-D4-3",
@@ -219,7 +273,34 @@
       },
       "hashRule": 2,
       "paramsHash": "6999fb48a8e30a450c1331a58759297947b6817def16b8439abad39c22c8ba98",
-      "chainId": 140
+      "chainId": 140,
+      "vhpReadings": [
+        {
+          "height": 41224411,
+          "readAt": "2026-11-20T02:00:38.833Z",
+          "values": {
+            "13iFaqgdnsoqUTCwZC9GtRXwh8ZvdiiPwm": "9924799168441"
+          },
+          "seal": "4c519cea37d00c59dee0dc08081cd3176e5ffd4969101e5237ed38fdc9c2ca31"
+        },
+        {
+          "height": 41225713,
+          "readAt": "2026-11-20T03:06:01.638Z",
+          "values": {
+            "13iFaqgdnsoqUTCwZC9GtRXwh8ZvdiiPwm": "9920706721741"
+          },
+          "seal": "aad5acb836eb3e8800b605d4ac4652a63e27a3840226d45ccdd6a6b716b479e7"
+        },
+        {
+          "height": 41227213,
+          "readAt": "2026-11-20T04:20:58.855Z",
+          "values": {
+            "13iFaqgdnsoqUTCwZC9GtRXwh8ZvdiiPwm": "9941168052747"
+          },
+          "seal": "26c76140339fab95ccfe2ba8ef930b78096f092241bd9584c85ac78cbd18a324"
+        }
+      ],
+      "vhpSeal": "24671b2a3941b630537b02d337e35d634bc133af8ed087c70d58ac807b4fae00"
     },
     {
       "id": "W004-D4-4",
@@ -289,7 +370,34 @@
       },
       "hashRule": 2,
       "paramsHash": "f5126df05c0ed1966e4241f632a0353d9627d1753aa5b9b18e112279aadac956",
-      "chainId": 141
+      "chainId": 141,
+      "vhpReadings": [
+        {
+          "height": 41224411,
+          "readAt": "2026-11-20T02:00:38.833Z",
+          "values": {
+            "network": "2273998370164593"
+          },
+          "seal": "d5e252402331071098958b01b891699d6d59ab761743b866664d15ee636746b0"
+        },
+        {
+          "height": 41225713,
+          "readAt": "2026-11-20T03:06:01.638Z",
+          "values": {
+            "network": "2273465943317288"
+          },
+          "seal": "82a0ed8707247bc7408116d825b71cd5222293ed03815762fbd914f1b7b7118b"
+        },
+        {
+          "height": 41227213,
+          "readAt": "2026-11-20T04:20:58.855Z",
+          "values": {
+            "network": "2283150607093449"
+          },
+          "seal": "58987c5e201b4c1f56c66ab930636b32095351784619a8f55d122396c5eaa5b6"
+        }
+      ],
+      "vhpSeal": "96b83cba4c0092760950e5d2c33d151bb82775acb2c199f3e99178ad016aa488"
     }
   ],
   "daySeal": "01210b159a75a74e5eadb7b8b251f46fe0ebd538c67ce34b4e9c5c0d9bbe9ac7"
