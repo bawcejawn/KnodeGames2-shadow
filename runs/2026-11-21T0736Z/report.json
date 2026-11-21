@@ -1,0 +1,172 @@
+{
+ "at": "2026-11-21T07:36:10.031Z",
+ "branches": {
+  "games-data": {
+   "same": 21,
+   "near": 5,
+   "diff": [
+    "blockx/W004.json (first difference at /targets/70/card)",
+    "blockx/X004-3.json (first difference at /targets/0/card)",
+    "blockx/X004-4.json (first difference at /targets/0/card)",
+    "blockx/X004-5.json (first difference at /targets/0)",
+    "blockx/board.json (first difference at /today/day)",
+    "bracket/W004.json (first difference at /days/2/6/re)",
+    "bracket/ruler/W004.json (first difference at /cards/0)",
+    "golf/W004.json (first difference at /holes/0/why)",
+    "golf/board.json (first difference at /today/day)"
+   ],
+   "onlyLive": [
+    "bracket/ruler/W004-R0.json",
+    "bracket/ruler/W004-R1.json"
+   ],
+   "onlyShadow": []
+  },
+  "race-data": {
+   "same": 9,
+   "near": 1,
+   "diff": [
+    "R004.json (first difference at /races/11/card)",
+    "W004.json (first difference at /races/12/cards/1/at)",
+    "board.json (first difference at /today/day)"
+   ],
+   "onlyLive": [],
+   "onlyShadow": []
+  },
+  "blocks-data": {
+   "same": 0,
+   "near": 0,
+   "diff": [
+    "recent-blocks.json (first difference at /made)"
+   ],
+   "onlyLive": [],
+   "onlyShadow": []
+  },
+  "vhp-data": {
+   "same": 39,
+   "near": 0,
+   "diff": [
+    "h/34327.json (first difference at /tail/sig/791)",
+    "h/34328.json (first difference at /prev)",
+    "h/34329.json (first difference at /prev)",
+    "h/34330.json (first difference at /prev)",
+    "h/34331.json (first difference at /prev)",
+    "h/34332.json (first difference at /prev)",
+    "h/34333.json (first difference at /prev)",
+    "h/34334.json (first difference at /prev)",
+    "h/34335.json (first difference at /prev)",
+    "h/34336.json (first difference at /prev)",
+    "h/34337.json (first difference at /prev)",
+    "h/34338.json (first difference at /prev)",
+    "h/34339.json (first difference at /prev)",
+    "h/34340.json (first difference at /prev)",
+    "h/34341.json (first difference at /prev)",
+    "h/34342.json (first difference at /prev)",
+    "h/34343.json (first difference at /prev)",
+    "h/34344.json (first difference at /prev)",
+    "h/34345.json (first difference at /prev)",
+    "h/34346.json (first difference at /prev)",
+    "h/34347.json (first difference at /prev)",
+    "h/34348.json (first difference at /prev)",
+    "h/34349.json (first difference at /prev)",
+    "h/34350.json (first difference at /prev)",
+    "h/34351.json (first difference at /prev)",
+    "h/34352.json (first difference at /prev)",
+    "h/34353.json (first difference at /prev)",
+    "h/34354.json (first difference at /prev)",
+    "h/34355.json (first difference at /prev)",
+    "h/34356.json (first difference at /prev)",
+    "h/34357.json (first difference at /prev)",
+    "h/34358.json (first difference at /prev)",
+    "h/34359.json (first difference at /prev)",
+    "h/34360.json (first difference at /prev)",
+    "h/34361.json (first difference at /prev)",
+    "h/34362.json (first difference at /prev)",
+    "h/34363.json (first difference at /prev)"
+   ],
+   "onlyLive": [
+    "d/1396.json",
+    "h/34296.json",
+    "h/34297.json",
+    "h/34298.json",
+    "h/34299.json",
+    "h/34300.json",
+    "h/34301.json",
+    "h/34302.json",
+    "h/34303.json",
+    "h/34304.json",
+    "h/34305.json",
+    "h/34306.json",
+    "h/34307.json",
+    "h/34308.json",
+    "h/34309.json",
+    "h/34310.json",
+    "h/34311.json",
+    "h/34312.json",
+    "h/34313.json",
+    "h/34314.json",
+    "h/34315.json",
+    "h/34316.json",
+    "h/34317.json",
+    "h/34318.json",
+    "h/34319.json"
+   ],
+   "onlyShadow": [
+    "d/1429.json",
+    "h/34364.json",
+    "h/34365.json",
+    "h/34366.json",
+    "h/34367.json",
+    "h/34368.json",
+    "h/34369.json",
+    "h/34370.json",
+    "h/34371.json",
+    "h/34372.json",
+    "h/34373.json",
+    "h/34374.json",
+    "h/34375.json",
+    "h/34376.json",
+    "h/34377.json",
+    "h/34378.json"
+   ]
+  },
+  "names-data": {
+   "same": 1,
+   "near": 0,
+   "diff": [],
+   "onlyLive": [],
+   "onlyShadow": []
+  },
+  "stats-data": {
+   "same": 0,
+   "near": 0,
+   "diff": [
+    "stats.json (first difference at /plays/racePicks)"
+   ],
+   "onlyLive": [],
+   "onlyShadow": []
+  },
+  "prize-settings": {
+   "same": 1,
+   "near": 0,
+   "diff": [],
+   "onlyLive": [],
+   "onlyShadow": []
+  },
+  "race-samples": {
+   "same": 0,
+   "near": 0,
+   "diff": [
+    "vhp-samples.json (first difference at /samples/0/at)"
+   ],
+   "onlyLive": [],
+   "onlyShadow": []
+  },
+  "game-data": {
+   "same": 41,
+   "near": 0,
+   "diff": [],
+   "onlyLive": [],
+   "onlyShadow": []
+  }
+ }
+}
