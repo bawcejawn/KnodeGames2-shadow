@@ -1,22 +1,22 @@
-# Shadow compare, 2026-11-20T17:56:29.835Z
+# Shadow compare, 2026-11-21T00:07:14.612Z
 
 | Branch | Same | Same but time | Different | Only live | Only shadow |
 |---|---|---|---|---|---|
 | games-data | 22 | 7 | 6 | 2 | 0 |
 | race-data | 9 | 1 | 3 | 0 | 0 |
 | blocks-data | 0 | 0 | 1 | 0 | 0 |
-| vhp-data | 64 | 0 | 37 | 0 | 2 |
+| vhp-data | 39 | 0 | 37 | 25 | 9 |
 | names-data | 1 | 0 | 0 | 0 | 0 |
 | stats-data | 0 | 0 | 1 | 0 | 0 |
 | prize-settings | 1 | 0 | 0 | 0 | 0 |
 | race-samples | 0 | 0 | 1 | 0 | 0 |
-| game-data | 34 | 0 | 6 | 1 | 0 |
+| game-data | 41 | 0 | 0 | 0 | 0 |
 
 ## games-data: different
 - blockx/W004.json (first difference at /targets/70/card)
 - blockx/X004-3.json (first difference at /targets/0/card)
 - blockx/X004-4.json (first difference at /targets/0/card)
-- bracket/W004.json (first difference at /days/1/18/re)
+- bracket/W004.json (first difference at /days/2/0/re)
 - bracket/ruler/W004.json (first difference at /cards/0)
 - golf/W004.json (first difference at /holes/0/why)
 
@@ -71,24 +71,47 @@
 - h/34362.json (first difference at /prev)
 - h/34363.json (first difference at /prev)
 
+## vhp-data: only on live
+- d/1396.json
+- h/34296.json
+- h/34297.json
+- h/34298.json
+- h/34299.json
+- h/34300.json
+- h/34301.json
+- h/34302.json
+- h/34303.json
+- h/34304.json
+- h/34305.json
+- h/34306.json
+- h/34307.json
+- h/34308.json
+- h/34309.json
+- h/34310.json
+- h/34311.json
+- h/34312.json
+- h/34313.json
+- h/34314.json
+- h/34315.json
+- h/34316.json
+- h/34317.json
+- h/34318.json
+- h/34319.json
+
 ## vhp-data: only in shadow
+- d/1429.json
 - h/34364.json
 - h/34365.json
+- h/34366.json
+- h/34367.json
+- h/34368.json
+- h/34369.json
+- h/34370.json
+- h/34371.json
 
 ## stats-data: different
 - stats.json (first difference at /plays/racePicks)
 
 ## race-samples: different
 - vhp-samples.json (first difference at /samples/0/at)
-
-## game-data: different
-- game-data/bot-state.json (first difference at /checkedUpTo)
-- game-data/index.json (first difference at /days/37)
-- game-data/questions/W004-D3.json (first difference at /questions/3/vhpReadings/18)
-- game-data/questions/W004-D4.json (first difference at /questions/0/result)
-- game-data/questions/W004-D5-00.json (first difference at /questions/0/vhpReadings)
-- game-data/state.json (first difference at /featured/14f34kUNZugf2DK4hPJGy4AkmBM7Y4pvVu)
-
-## game-data: only on live
-- game-data/questions/W004-D5.json
 
