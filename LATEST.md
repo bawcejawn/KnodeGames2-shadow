@@ -1,11 +1,11 @@
-# Shadow compare, 2026-11-21T07:36:10.031Z
+# Shadow compare, 2026-11-21T16:19:34.642Z
 
 | Branch | Same | Same but time | Different | Only live | Only shadow |
 |---|---|---|---|---|---|
 | games-data | 21 | 5 | 9 | 2 | 0 |
 | race-data | 9 | 1 | 3 | 0 | 0 |
 | blocks-data | 0 | 0 | 1 | 0 | 0 |
-| vhp-data | 39 | 0 | 37 | 25 | 16 |
+| vhp-data | 39 | 0 | 37 | 25 | 24 |
 | names-data | 1 | 0 | 0 | 0 | 0 |
 | stats-data | 0 | 0 | 1 | 0 | 0 |
 | prize-settings | 1 | 0 | 0 | 0 | 0 |
@@ -18,7 +18,7 @@
 - blockx/X004-4.json (first difference at /targets/0/card)
 - blockx/X004-5.json (first difference at /targets/0)
 - blockx/board.json (first difference at /today/day)
-- bracket/W004.json (first difference at /days/2/6/re)
+- bracket/W004.json (first difference at /days/2/13)
 - bracket/ruler/W004.json (first difference at /cards/0)
 - golf/W004.json (first difference at /holes/0/why)
 - golf/board.json (first difference at /today/day)
@@ -118,6 +118,14 @@
 - h/34376.json
 - h/34377.json
 - h/34378.json
+- h/34379.json
+- h/34380.json
+- h/34381.json
+- h/34382.json
+- h/34383.json
+- h/34384.json
+- h/34385.json
+- h/34386.json
 
 ## stats-data: different
 - stats.json (first difference at /plays/racePicks)
