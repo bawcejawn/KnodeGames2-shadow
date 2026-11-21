@@ -1,11 +1,11 @@
-# Shadow compare, 2026-11-21T16:19:34.642Z
+# Shadow compare, 2026-11-21T21:49:00.812Z
 
 | Branch | Same | Same but time | Different | Only live | Only shadow |
 |---|---|---|---|---|---|
 | games-data | 21 | 5 | 9 | 2 | 0 |
 | race-data | 9 | 1 | 3 | 0 | 0 |
 | blocks-data | 0 | 0 | 1 | 0 | 0 |
-| vhp-data | 39 | 0 | 37 | 25 | 24 |
+| vhp-data | 31 | 0 | 20 | 50 | 31 |
 | names-data | 1 | 0 | 0 | 0 | 0 |
 | stats-data | 0 | 0 | 1 | 0 | 0 |
 | prize-settings | 1 | 0 | 0 | 0 | 0 |
@@ -18,7 +18,7 @@
 - blockx/X004-4.json (first difference at /targets/0/card)
 - blockx/X004-5.json (first difference at /targets/0)
 - blockx/board.json (first difference at /today/day)
-- bracket/W004.json (first difference at /days/2/13)
+- bracket/W004.json (first difference at /days/2/12/re)
 - bracket/ruler/W004.json (first difference at /cards/0)
 - golf/W004.json (first difference at /holes/0/why)
 - golf/board.json (first difference at /today/day)
@@ -36,23 +36,6 @@
 - recent-blocks.json (first difference at /made)
 
 ## vhp-data: different
-- h/34327.json (first difference at /tail/sig/791)
-- h/34328.json (first difference at /prev)
-- h/34329.json (first difference at /prev)
-- h/34330.json (first difference at /prev)
-- h/34331.json (first difference at /prev)
-- h/34332.json (first difference at /prev)
-- h/34333.json (first difference at /prev)
-- h/34334.json (first difference at /prev)
-- h/34335.json (first difference at /prev)
-- h/34336.json (first difference at /prev)
-- h/34337.json (first difference at /prev)
-- h/34338.json (first difference at /prev)
-- h/34339.json (first difference at /prev)
-- h/34340.json (first difference at /prev)
-- h/34341.json (first difference at /prev)
-- h/34342.json (first difference at /prev)
-- h/34343.json (first difference at /prev)
 - h/34344.json (first difference at /prev)
 - h/34345.json (first difference at /prev)
 - h/34346.json (first difference at /prev)
@@ -76,6 +59,7 @@
 
 ## vhp-data: only on live
 - d/1396.json
+- d/1397.json
 - h/34296.json
 - h/34297.json
 - h/34298.json
@@ -100,9 +84,14 @@
 - h/34317.json
 - h/34318.json
 - h/34319.json
+- h/34320.json
+- h/34321.json
+- h/34322.json
+- h/34323.json
 
 ## vhp-data: only in shadow
 - d/1429.json
+- d/1430.json
 - h/34364.json
 - h/34365.json
 - h/34366.json
@@ -126,6 +115,11 @@
 - h/34384.json
 - h/34385.json
 - h/34386.json
+- h/34387.json
+- h/34388.json
+- h/34389.json
+- h/34390.json
+- h/34391.json
 
 ## stats-data: different
 - stats.json (first difference at /plays/racePicks)
