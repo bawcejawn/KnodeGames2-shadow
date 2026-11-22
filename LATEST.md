@@ -1,11 +1,11 @@
-# Shadow compare, 2026-11-21T21:49:00.812Z
+# Shadow compare, 2026-11-22T02:32:15.065Z
 
 | Branch | Same | Same but time | Different | Only live | Only shadow |
 |---|---|---|---|---|---|
-| games-data | 21 | 5 | 9 | 2 | 0 |
+| games-data | 21 | 3 | 11 | 2 | 1 |
 | race-data | 9 | 1 | 3 | 0 | 0 |
 | blocks-data | 0 | 0 | 1 | 0 | 0 |
-| vhp-data | 31 | 0 | 20 | 50 | 31 |
+| vhp-data | 31 | 0 | 20 | 50 | 36 |
 | names-data | 1 | 0 | 0 | 0 | 0 |
 | stats-data | 0 | 0 | 1 | 0 | 0 |
 | prize-settings | 1 | 0 | 0 | 0 | 0 |
@@ -19,6 +19,8 @@
 - blockx/X004-5.json (first difference at /targets/0)
 - blockx/board.json (first difference at /today/day)
 - bracket/W004.json (first difference at /days/2/12/re)
+- bracket/board.json (first difference at /next/status)
+- bracket/index.json (first difference at /weeks/2)
 - bracket/ruler/W004.json (first difference at /cards/0)
 - golf/W004.json (first difference at /holes/0/why)
 - golf/board.json (first difference at /today/day)
@@ -26,6 +28,9 @@
 ## games-data: only on live
 - bracket/ruler/W004-R0.json
 - bracket/ruler/W004-R1.json
+
+## games-data: only in shadow
+- bracket/W005.json
 
 ## race-data: different
 - R004.json (first difference at /races/11/card)
