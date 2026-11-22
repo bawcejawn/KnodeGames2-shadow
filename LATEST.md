@@ -1,11 +1,11 @@
-# Shadow compare, 2026-11-22T02:32:15.065Z
+# Shadow compare, 2026-11-22T11:50:39.523Z
 
 | Branch | Same | Same but time | Different | Only live | Only shadow |
 |---|---|---|---|---|---|
-| games-data | 21 | 3 | 11 | 2 | 1 |
-| race-data | 9 | 1 | 3 | 0 | 0 |
+| games-data | 20 | 3 | 12 | 2 | 1 |
+| race-data | 9 | 1 | 3 | 0 | 1 |
 | blocks-data | 0 | 0 | 1 | 0 | 0 |
-| vhp-data | 31 | 0 | 20 | 50 | 36 |
+| vhp-data | 31 | 0 | 20 | 50 | 43 |
 | names-data | 1 | 0 | 0 | 0 | 0 |
 | stats-data | 0 | 0 | 1 | 0 | 0 |
 | prize-settings | 1 | 0 | 0 | 0 | 0 |
@@ -17,6 +17,7 @@
 - blockx/X004-3.json (first difference at /targets/0/card)
 - blockx/X004-4.json (first difference at /targets/0/card)
 - blockx/X004-5.json (first difference at /targets/0)
+- blockx/X004-6.json (first difference at /targets/0)
 - blockx/board.json (first difference at /today/day)
 - bracket/W004.json (first difference at /days/2/12/re)
 - bracket/board.json (first difference at /next/status)
@@ -36,6 +37,9 @@
 - R004.json (first difference at /races/11/card)
 - W004.json (first difference at /races/12/cards/1/at)
 - board.json (first difference at /today/day)
+
+## race-data: only in shadow
+- vault/W4.json
 
 ## blocks-data: different
 - recent-blocks.json (first difference at /made)
