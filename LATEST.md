@@ -1,11 +1,11 @@
-# Shadow compare, 2026-11-22T19:55:11.392Z
+# Shadow compare, 2026-11-23T01:03:58.481Z
 
 | Branch | Same | Same but time | Different | Only live | Only shadow |
 |---|---|---|---|---|---|
 | games-data | 20 | 3 | 12 | 2 | 1 |
 | race-data | 9 | 1 | 3 | 0 | 1 |
 | blocks-data | 0 | 0 | 1 | 0 | 0 |
-| vhp-data | 31 | 0 | 20 | 50 | 51 |
+| vhp-data | 30 | 0 | 0 | 71 | 54 |
 | names-data | 1 | 0 | 0 | 0 | 0 |
 | stats-data | 0 | 0 | 1 | 0 | 0 |
 | prize-settings | 1 | 0 | 0 | 0 | 0 |
@@ -44,31 +44,10 @@
 ## blocks-data: different
 - recent-blocks.json (first difference at /made)
 
-## vhp-data: different
-- h/34344.json (first difference at /prev)
-- h/34345.json (first difference at /prev)
-- h/34346.json (first difference at /prev)
-- h/34347.json (first difference at /prev)
-- h/34348.json (first difference at /prev)
-- h/34349.json (first difference at /prev)
-- h/34350.json (first difference at /prev)
-- h/34351.json (first difference at /prev)
-- h/34352.json (first difference at /prev)
-- h/34353.json (first difference at /prev)
-- h/34354.json (first difference at /prev)
-- h/34355.json (first difference at /prev)
-- h/34356.json (first difference at /prev)
-- h/34357.json (first difference at /prev)
-- h/34358.json (first difference at /prev)
-- h/34359.json (first difference at /prev)
-- h/34360.json (first difference at /prev)
-- h/34361.json (first difference at /prev)
-- h/34362.json (first difference at /prev)
-- h/34363.json (first difference at /prev)
-
 ## vhp-data: only on live
 - d/1396.json
 - d/1397.json
+- d/1398.json
 - h/34296.json
 - h/34297.json
 - h/34298.json
@@ -96,15 +75,11 @@
 - h/34320.json
 - h/34321.json
 - h/34322.json
-- h/34323.json
 
 ## vhp-data: only in shadow
 - d/1429.json
 - d/1430.json
-- h/34364.json
-- h/34365.json
-- h/34366.json
-- h/34367.json
+- d/1431.json
 - h/34368.json
 - h/34369.json
 - h/34370.json
@@ -129,6 +104,9 @@
 - h/34389.json
 - h/34390.json
 - h/34391.json
+- h/34392.json
+- h/34393.json
+- h/34394.json
 
 ## stats-data: different
 - stats.json (first difference at /plays/racePicks)
