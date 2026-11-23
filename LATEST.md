@@ -1,11 +1,11 @@
-# Shadow compare, 2026-11-23T01:03:58.481Z
+# Shadow compare, 2026-11-23T09:34:02.036Z
 
 | Branch | Same | Same but time | Different | Only live | Only shadow |
 |---|---|---|---|---|---|
-| games-data | 20 | 3 | 12 | 2 | 1 |
-| race-data | 9 | 1 | 3 | 0 | 1 |
+| games-data | 20 | 3 | 12 | 2 | 15 |
+| race-data | 9 | 0 | 4 | 0 | 8 |
 | blocks-data | 0 | 0 | 1 | 0 | 0 |
-| vhp-data | 30 | 0 | 0 | 71 | 54 |
+| vhp-data | 30 | 0 | 0 | 71 | 61 |
 | names-data | 1 | 0 | 0 | 0 | 0 |
 | stats-data | 0 | 0 | 1 | 0 | 0 |
 | prize-settings | 1 | 0 | 0 | 0 | 0 |
@@ -20,7 +20,7 @@
 - blockx/X004-6.json (first difference at /targets/0)
 - blockx/board.json (first difference at /today/day)
 - bracket/W004.json (first difference at /days/2/12/re)
-- bracket/board.json (first difference at /next/status)
+- bracket/board.json (first difference at /next/week)
 - bracket/index.json (first difference at /weeks/2)
 - bracket/ruler/W004.json (first difference at /cards/0)
 - golf/W004.json (first difference at /holes/0/why)
@@ -32,13 +32,35 @@
 
 ## games-data: only in shadow
 - bracket/W005.json
+- fantasy/W004/d1.07c7d7531e08.json
+- fantasy/W004/d2.59e76f43a332.json
+- fantasy/W004/d3.9c20219a3d42.json
+- fantasy/W004/d4.f4f4b5c684b4.json
+- fantasy/W004/d5.bb716b7564cd.json
+- fantasy/W004/d6.9157fcabadae.json
+- fantasy/W004/d7.9cb563fe7f62.json
+- fantasy/W004/manifest.json
+- fantasy/W004/p/0.dbd01ffcc99a.json
+- fantasy/W004/p/2.fc88e2560d94.json
+- fantasy/W004/wk.83a14c04c309.json
+- fantasy/board.json
+- questions/W004.json
+- questions/board.json
 
 ## race-data: different
 - R004.json (first difference at /races/11/card)
 - W004.json (first difference at /races/12/cards/1/at)
 - board.json (first difference at /today/day)
+- index.json (first difference at /weeks/4)
 
 ## race-data: only in shadow
+- R005-1.json
+- R005-2.json
+- R005-3.json
+- R005-4.json
+- R005.json
+- T005.json
+- W005.json
 - vault/W4.json
 
 ## blocks-data: different
@@ -109,7 +131,7 @@
 - h/34394.json
 
 ## stats-data: different
-- stats.json (first difference at /plays/racePicks)
+- stats.json (first difference at /week/start)
 
 ## race-samples: different
 - vhp-samples.json (first difference at /samples/0/at)
