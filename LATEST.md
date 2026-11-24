@@ -1,11 +1,11 @@
-# Shadow compare, 2026-11-24T06:17:17.475Z
+# Shadow compare, 2026-11-24T18:07:41.446Z
 
 | Branch | Same | Same but time | Different | Only live | Only shadow |
 |---|---|---|---|---|---|
-| games-data | 0 | 0 | 0 | 0 | 62 |
+| games-data | 0 | 0 | 0 | 0 | 63 |
 | race-data | 0 | 0 | 0 | 0 | 21 |
 | blocks-data | 0 | 0 | 0 | 0 | 1 |
-| vhp-data | 0 | 0 | 0 | 0 | 88 |
+| vhp-data | 0 | 0 | 0 | 0 | 99 |
 | names-data | 0 | 0 | 0 | 0 | 1 |
 | stats-data | 0 | 0 | 0 | 0 | 1 |
 | prize-settings | 0 | 0 | 0 | 0 | 1 |
