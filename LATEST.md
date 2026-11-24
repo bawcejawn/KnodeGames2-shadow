@@ -1,11 +1,11 @@
-# Shadow compare, 2026-11-23T22:11:15.018Z
+# Shadow compare, 2026-11-24T06:17:17.475Z
 
 | Branch | Same | Same but time | Different | Only live | Only shadow |
 |---|---|---|---|---|---|
-| games-data | 0 | 0 | 0 | 0 | 61 |
+| games-data | 0 | 0 | 0 | 0 | 62 |
 | race-data | 0 | 0 | 0 | 0 | 21 |
 | blocks-data | 0 | 0 | 0 | 0 | 1 |
-| vhp-data | 0 | 0 | 0 | 0 | 104 |
+| vhp-data | 0 | 0 | 0 | 0 | 88 |
 | names-data | 0 | 0 | 0 | 0 | 1 |
 | stats-data | 0 | 0 | 0 | 0 | 1 |
 | prize-settings | 0 | 0 | 0 | 0 | 1 |
@@ -39,10 +39,10 @@
 - blockx/index.json
 - blockx/vault/.gitkeep
 - blockx/vault/W3.json
+- blockx/vault/W4.json
 - bracket/W003.json
 - bracket/W004.json
 - bracket/W005.json
-- bracket/board.json
 
 ## race-data: only in shadow
 - R003.json
@@ -71,7 +71,6 @@
 - recent-blocks.json
 
 ## vhp-data: only in shadow
-- d/1399.json
 - d/1400.json
 - d/1401.json
 - d/1402.json
@@ -101,6 +100,7 @@
 - d/1426.json
 - d/1427.json
 - d/1428.json
+- d/1429.json
 
 ## names-data: only in shadow
 - names.json
