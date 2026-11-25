@@ -1,11 +1,11 @@
-# Shadow compare, 2026-11-25T02:43:33.142Z
+# Shadow compare, 2026-11-25T13:21:46.556Z
 
 | Branch | Same | Same but time | Different | Only live | Only shadow |
 |---|---|---|---|---|---|
 | games-data | 0 | 0 | 0 | 0 | 63 |
-| race-data | 0 | 0 | 0 | 0 | 21 |
+| race-data | 0 | 0 | 0 | 0 | 22 |
 | blocks-data | 0 | 0 | 0 | 0 | 1 |
-| vhp-data | 0 | 0 | 0 | 0 | 83 |
+| vhp-data | 0 | 0 | 0 | 0 | 92 |
 | names-data | 0 | 0 | 0 | 0 | 1 |
 | stats-data | 0 | 0 | 0 | 0 | 1 |
 | prize-settings | 0 | 0 | 0 | 0 | 1 |
@@ -62,6 +62,7 @@
 - index.json
 - vault/PENDING-W2.json
 - vault/PENDING-W3.json
+- vault/PENDING-W4.json
 - vault/W1.json
 - vault/W2.json
 - vault/W3.json
