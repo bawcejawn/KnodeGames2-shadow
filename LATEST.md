@@ -1,11 +1,11 @@
-# Shadow compare, 2026-11-27T00:44:08.567Z
+# Shadow compare, 2026-11-27T09:58:51.895Z
 
 | Branch | Same | Same but time | Different | Only live | Only shadow |
 |---|---|---|---|---|---|
 | games-data | 0 | 0 | 0 | 0 | 63 |
 | race-data | 0 | 0 | 0 | 0 | 22 |
 | blocks-data | 0 | 0 | 0 | 0 | 1 |
-| vhp-data | 0 | 0 | 0 | 0 | 104 |
+| vhp-data | 0 | 0 | 0 | 0 | 86 |
 | names-data | 0 | 0 | 0 | 0 | 1 |
 | stats-data | 0 | 0 | 0 | 0 | 1 |
 | prize-settings | 0 | 0 | 0 | 0 | 1 |
@@ -72,7 +72,6 @@
 - recent-blocks.json
 
 ## vhp-data: only in shadow
-- d/1402.json
 - d/1403.json
 - d/1404.json
 - d/1405.json
@@ -102,6 +101,7 @@
 - d/1429.json
 - d/1430.json
 - d/1431.json
+- d/1432.json
 
 ## names-data: only in shadow
 - names.json
